@@ -26,8 +26,7 @@ def main():
     
     # Print the gate map for clarity
     print("\n--- Action Space Gate Map ---")
-    gate_map_str = {k: v.name if v.name else "Identity" for k, v in env._gate_map.items()}
-    print(json.dumps(gate_map_str, indent=2))
+    print(json.dumps(env._gate_name_map, indent=2))
     print("-----------------------------\n")
 
     # Reset the environment and get the initial observation
@@ -41,7 +40,8 @@ def main():
     for i in range(num_steps):
         # Sample a random action from the action space
         action = env.action_space.sample()
-        print(f"\n--- Step {i+1}/{num_steps}, Action: {action} ---")
+        action_name = env._gate_name_map[action]
+        print(f"\n--- Step {i+1}/{num_steps}, Action: {action} ({action_name}) ---")
         
         # Apply the action
         obs, reward, terminated, truncated, info = env.step(action)

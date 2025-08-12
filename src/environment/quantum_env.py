@@ -5,6 +5,7 @@ import qutip
 import matplotlib.pyplot as plt
 from qutip.visualization import matrix_histogram
 from qutip import gates
+import os
 
 
 class QuantumPrepEnv(gym.Env):
@@ -81,7 +82,7 @@ class QuantumPrepEnv(gym.Env):
         # --- Action Space ---
         # We define an expanded discrete set of gates for more control.
         self.action_space = spaces.Discrete(9)
-        self._gate_map = self._create_gate_map()
+        self._gate_map, self._gate_name_map = self._create_gate_maps()
 
         # --- Observation Space ---
         # The state vector's real and imaginary parts.
@@ -100,6 +101,8 @@ class QuantumPrepEnv(gym.Env):
         self.axes = None
         self.bloch = None
         if self.render_mode == "human":
+            self.render_path = "renders"
+            os.makedirs(self.render_path, exist_ok=True)
             self._initialize_plot()
 
     def _initialize_plot(self):
@@ -109,8 +112,8 @@ class QuantumPrepEnv(gym.Env):
         # GridSpec for advanced layout
         gs = self.fig.add_gridspec(1, 2, width_ratios=[1, 1])
 
-        # Axes for the matrix histogram
-        ax1 = self.fig.add_subplot(gs[0])
+        # Axes for the matrix histogram (must be 3D for view_init)
+        ax1 = self.fig.add_subplot(gs[0], projection='3d')
         
         # Axes for the Bloch sphere (must be 3D)
         ax2 = self.fig.add_subplot(gs[1], projection='3d')
@@ -121,11 +124,8 @@ class QuantumPrepEnv(gym.Env):
         self.bloch = qutip.Bloch(axes=self.axes[1])
         self.bloch.vector_color = ['r', 'g']
         
-        plt.ion()
-        plt.show()
-
-    def _create_gate_map(self):
-        """Creates the mapping from action index to a QuTiP gate operator."""
+    def _create_gate_maps(self):
+        """Creates the mapping from action index to a QuTiP gate operator and its name."""
         if self.num_qubits != 2:
             raise NotImplementedError("Gate map is only implemented for 2 qubits.")
         
@@ -147,10 +147,24 @@ class QuantumPrepEnv(gym.Env):
         # Identity gate
         identity = qutip.tensor(qutip.qeye(2), qutip.qeye(2))
         
-        return {
+        gate_map = {
             0: h_0, 1: h_1, 2: x_0, 3: x_1, 4: z_0, 5: z_1, 
             6: cnot_01, 7: cnot_10, 8: identity
         }
+
+        gate_name_map = {
+            0: "Hadamard Q0",
+            1: "Hadamard Q1",
+            2: "Pauli-X Q0",
+            3: "Pauli-X Q1",
+            4: "Pauli-Z Q0",
+            5: "Pauli-Z Q1",
+            6: "CNOT (0->1)",
+            7: "CNOT (1->0)",
+            8: "Identity",
+        }
+
+        return gate_map, gate_name_map
 
     def reset(self, seed=None, options=None):
         """Resets the environment for a new episode."""
@@ -237,8 +251,10 @@ class QuantumPrepEnv(gym.Env):
                 f"Step: {self.current_step} | Fidelity: {self.last_fidelity:.4f}", 
                 fontsize=16
             )
-            self.fig.canvas.draw()
-            self.fig.canvas.flush_events()
+            
+            # Save the figure instead of showing it interactively
+            save_path = os.path.join(self.render_path, f"step_{self.current_step}.png")
+            self.fig.savefig(save_path)
 
 
     def close(self):
