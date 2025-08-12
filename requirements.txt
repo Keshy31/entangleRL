@@ -1,0 +1,25 @@
+# Core Dependencies for EntangleRL
+# Quantum Computing
+qutip>=4.7.0                    # Quantum simulation and visualization
+numpy>=1.24.0                   # Numerical computing
+scipy>=1.10.0                   # Scientific computing
+
+# Reinforcement Learning  
+gymnasium>=0.29.0               # RL environment interface
+torch>=2.0.0                    # Deep learning framework
+pufferlib>=0.5.0               # High-performance RL training
+
+# Visualization and UI
+pygame>=2.5.0                   # Game engine for interactive demos
+matplotlib>=3.7.0               # Plotting and Bloch sphere rendering
+seaborn>=0.12.0                # Enhanced plotting aesthetics
+
+# Utilities and Development
+tqdm>=4.65.0                    # Progress bars
+tensorboard>=2.13.0             # Training metrics logging
+
+# Development Tools (optional)
+pytest>=7.4.0                  # Unit testing
+black>=23.0.0                   # Code formatting
+flake8>=6.0.0                   # Code linting
+pre-commit>=3.3.0               # Git hooks for code quality
