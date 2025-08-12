@@ -33,6 +33,8 @@ def main():
     obs, info = env.reset()
     print(f"Initial Observation Shape: {obs.shape}")
     print(f"Initial Info: {info}")
+    print("Initial State Vector:")
+    print(env.current_state)
     env.render()
     
     # Take a few random steps
@@ -51,11 +53,15 @@ def main():
         print(f"Reward: {reward:.4f}")
         print(f"Info: {info}")
         print(f"Terminated: {terminated}, Truncated: {truncated}")
+        print("Current State Vector:")
+        print(env.current_state)
         env.render()
         
         if terminated or truncated:
             print("\nEpisode finished. Resetting environment.")
             obs, info = env.reset()
+            print("Initial State Vector:")
+            print(env.current_state)
             env.render()
 
     print("\n--- Environment Test Complete ---")
