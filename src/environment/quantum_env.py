@@ -19,12 +19,10 @@ class QuantumPrepEnv(gym.Env):
     This environment uses QuTiP to simulate the quantum system.
 
     ### Observation Space
-    The observation is the quantum state vector of the system. Since neural
-    networks work with flat arrays of floats, the complex state vector is
-    flattened and split into its real and imaginary parts.
-    - For a 2-qubit system, the state is a 4x1 vector. The observation is a
-      flat array of 8 floats (4 real, 4 imaginary).
-    - Type: spaces.Box(low=-1, high=1, shape=(2 * 2**num_qubits,), dtype=np.float32)
+    The observation consists of expectation values for Pauli operators on each qubit,
+    simulating partial observability: ⟨σ_x0⟩, ⟨σ_y0⟩, ⟨σ_z0⟩, ⟨σ_x1⟩, ⟨σ_y1⟩, ⟨σ_z1⟩.
+    - For a 2-qubit system, this is a 6-float array (values between -1 and 1).
+    - Type: spaces.Box(low=-1, high=1, shape=(6,), dtype=np.float32)
 
     ### Action Space
     The agent can choose from a discrete set of quantum gates to apply.
@@ -61,8 +59,13 @@ class QuantumPrepEnv(gym.Env):
         target_state=None, 
         max_steps=50, 
         render_mode=None,
-        noise_level=0.0,
-        gate_time=0.1
+        gate_time=0.1,
+        amplitude_damping_rate=0.2,
+        dephasing_rate=0.1,
+        depolarizing_rate=0.01,
+        bit_flip_rate=0.02,
+        thermal_occupation=0.1,
+        meta_noise=False
     ):
         """
         Initializes the quantum environment.
@@ -74,8 +77,13 @@ class QuantumPrepEnv(gym.Env):
         self.max_steps = max_steps
         
         # --- Noise Parameters ---
-        self.noise_level = noise_level
-        self.gate_time = gate_time # Time over which noise acts after each gate
+        self.gate_time = gate_time
+        self.amplitude_damping_rate = amplitude_damping_rate
+        self.dephasing_rate = dephasing_rate
+        self.depolarizing_rate = depolarizing_rate
+        self.bit_flip_rate = bit_flip_rate
+        self.thermal_occupation = thermal_occupation  # n_th >=0; if >0, adds excitation to amplitude damping
+        self.meta_noise = meta_noise
         
         # --- Define Quantum States (as Density Matrices) ---
         # The initial state is |0...0> for the given number of qubits.
@@ -96,9 +104,8 @@ class QuantumPrepEnv(gym.Env):
         self.action_space = spaces.Discrete(9)
         self._gate_map, self._gate_name_map = self._create_gate_maps()
 
-        # --- Observation Space (based on Density Matrix) ---
-        # A density matrix for N qubits is (2^N x 2^N). We flatten it.
-        obs_shape = 2 * (2**self.num_qubits)**2
+        # --- Observation Space (Partial: Pauli Expectations) ---
+        obs_shape = 6  # ⟨σ_x0⟩, ⟨σ_y0⟩, ⟨σ_z0⟩, ⟨σ_x1⟩, ⟨σ_y1⟩, ⟨σ_z1⟩
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(obs_shape,), dtype=np.float32
         )
@@ -183,6 +190,13 @@ class QuantumPrepEnv(gym.Env):
         """Resets the environment for a new episode."""
         super().reset(seed=seed)
         
+        if self.meta_noise:
+            self.amplitude_damping_rate = np.random.uniform(0.0, 0.2)
+            self.dephasing_rate = np.random.uniform(0.0, 0.1)
+            self.depolarizing_rate = np.random.uniform(0.0, 0.05)
+            self.bit_flip_rate = np.random.uniform(0.0, 0.05)
+            self.thermal_occupation = np.random.uniform(0.0, 0.1)
+        
         self.current_state = self.initial_state.copy()
         self.current_step = 0
         
@@ -203,16 +217,48 @@ class QuantumPrepEnv(gym.Env):
         self.current_state = gate * self.current_state * gate.dag()
 
         # --- Apply Noise using mesolve ---
-        if self.noise_level > 0:
-            # Define collapse operators for amplitude damping
-            gamma = self.noise_level
-            c_ops = []
+        c_ops = []
+        
+        # Amplitude damping (and generalized if thermal_occupation >0)
+        if self.amplitude_damping_rate > 0:
+            gamma = self.amplitude_damping_rate
+            n_th = self.thermal_occupation
             for i in range(self.num_qubits):
-                # Create a fresh list of identity operators for each collapse operator
+                op_list_m = [qutip.qeye(2)] * self.num_qubits
+                op_list_m[i] = qutip.sigmam()  # Decay (σ⁻)
+                c_ops.append(np.sqrt(gamma * (1 + n_th)) * qutip.tensor(op_list_m))
+                
+                if n_th > 0:
+                    op_list_p = [qutip.qeye(2)] * self.num_qubits
+                    op_list_p[i] = qutip.sigmap()  # Excitation (σ⁺)
+                    c_ops.append(np.sqrt(gamma * n_th) * qutip.tensor(op_list_p))
+        
+        # Dephasing
+        if self.dephasing_rate > 0:
+            gamma = self.dephasing_rate
+            for i in range(self.num_qubits):
                 op_list = [qutip.qeye(2)] * self.num_qubits
-                op_list[i] = qutip.sigmap()
-                c_ops.append(np.sqrt(gamma) * qutip.tensor(op_list))
-
+                op_list[i] = qutip.sigmaz()
+                c_ops.append(np.sqrt(gamma / 2) * qutip.tensor(op_list))
+        
+        # Depolarizing (local per qubit)
+        if self.depolarizing_rate > 0:
+            gamma = self.depolarizing_rate
+            for i in range(self.num_qubits):
+                for pauli in [qutip.sigmax(), qutip.sigmay(), qutip.sigmaz()]:
+                    op_list = [qutip.qeye(2)] * self.num_qubits
+                    op_list[i] = pauli
+                    c_ops.append(np.sqrt(gamma / 4) * qutip.tensor(op_list))
+        
+        # Bit flip (approximate)
+        if self.bit_flip_rate > 0:
+            gamma = self.bit_flip_rate
+            for i in range(self.num_qubits):
+                op_list = [qutip.qeye(2)] * self.num_qubits
+                op_list[i] = qutip.sigmax()
+                c_ops.append(np.sqrt(gamma / 2) * qutip.tensor(op_list))
+        
+        if len(c_ops) > 0:
             # Evolve under noise for a short time with no Hamiltonian
             h_null = qutip.qzero(self.current_state.dims[0])
             tlist = [0, self.gate_time]
@@ -246,9 +292,21 @@ class QuantumPrepEnv(gym.Env):
         return observation, reward, terminated, truncated, info
 
     def _get_obs(self):
-        """Flattens the complex density matrix into a real-valued numpy array."""
-        state_vector = self.current_state.full().flatten()
-        return np.concatenate((state_vector.real, state_vector.imag)).astype(np.float32)
+        """Returns partial observations: Pauli expectation values."""
+        sx0 = qutip.tensor(qutip.sigmax(), qutip.qeye(2))
+        sy0 = qutip.tensor(qutip.sigmay(), qutip.qeye(2))
+        sz0 = qutip.tensor(qutip.sigmaz(), qutip.qeye(2))
+        sx1 = qutip.tensor(qutip.qeye(2), qutip.sigmax())
+        sy1 = qutip.tensor(qutip.qeye(2), qutip.sigmay())
+        sz1 = qutip.tensor(qutip.qeye(2), qutip.sigmaz())
+        return np.array([
+            (sx0 * self.current_state).tr().real,
+            (sy0 * self.current_state).tr().real,
+            (sz0 * self.current_state).tr().real,
+            (sx1 * self.current_state).tr().real,
+            (sy1 * self.current_state).tr().real,
+            (sz1 * self.current_state).tr().real
+        ], dtype=np.float32)
 
     def _get_info(self):
         """Returns auxiliary diagnostic information."""
