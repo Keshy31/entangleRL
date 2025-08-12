@@ -55,38 +55,50 @@ class QuantumPrepEnv(gym.Env):
     """
     metadata = {'render_modes': ['human'], 'render_fps': 4}
 
-    def __init__(self, num_qubits=2, target_state=None, max_steps=50, render_mode=None):
+    def __init__(
+        self, 
+        num_qubits=2, 
+        target_state=None, 
+        max_steps=50, 
+        render_mode=None,
+        noise_level=0.0,
+        gate_time=0.1
+    ):
         """
         Initializes the quantum environment.
         """
         super().__init__()
         
-        # Add render_mode to the class
-        self.render_mode = render_mode
-
+        # Core environment parameters
         self.num_qubits = num_qubits
         self.max_steps = max_steps
-
-        # --- Define Quantum States ---
+        
+        # --- Noise Parameters ---
+        self.noise_level = noise_level
+        self.gate_time = gate_time # Time over which noise acts after each gate
+        
+        # --- Define Quantum States (as Density Matrices) ---
         # The initial state is |0...0> for the given number of qubits.
-        self.initial_state = qutip.tensor([qutip.basis(2, 0)] * self.num_qubits)
+        initial_ket = qutip.tensor([qutip.basis(2, 0)] * self.num_qubits)
+        self.initial_state = qutip.ket2dm(initial_ket)
         
         # The target state defaults to the Bell state |Φ+⟩ for 2 qubits.
         if target_state is None:
             if self.num_qubits != 2:
                 raise ValueError("Default target state is only defined for 2 qubits.")
-            self.target_state = qutip.bell_state('00')
+            target_ket = qutip.bell_state('00')
+            self.target_state = qutip.ket2dm(target_ket)
         else:
-            self.target_state = target_state
+            # Ensure target is a density matrix
+            self.target_state = target_state if target_state.isoper else qutip.ket2dm(target_state)
             
         # --- Action Space ---
-        # We define an expanded discrete set of gates for more control.
         self.action_space = spaces.Discrete(9)
         self._gate_map, self._gate_name_map = self._create_gate_maps()
 
-        # --- Observation Space ---
-        # The state vector's real and imaginary parts.
-        obs_shape = 2 * (2**self.num_qubits)
+        # --- Observation Space (based on Density Matrix) ---
+        # A density matrix for N qubits is (2^N x 2^N). We flatten it.
+        obs_shape = 2 * (2**self.num_qubits)**2
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(obs_shape,), dtype=np.float32
         )
@@ -97,6 +109,7 @@ class QuantumPrepEnv(gym.Env):
         self.last_fidelity = None
 
         # --- Visualization ---
+        self.render_mode = render_mode
         self.fig = None
         self.axes = None
         self.bloch = None
@@ -184,9 +197,27 @@ class QuantumPrepEnv(gym.Env):
     def step(self, action):
         """Executes one time step by applying a quantum gate."""
         
-        # --- Apply Action ---
+        # --- Apply Ideal Gate ---
         gate = self._gate_map[action]
-        self.current_state = gate * self.current_state
+        # Unitary evolution on a density matrix: ρ' = UρU†
+        self.current_state = gate * self.current_state * gate.dag()
+
+        # --- Apply Noise using mesolve ---
+        if self.noise_level > 0:
+            # Define collapse operators for amplitude damping
+            gamma = self.noise_level
+            c_ops = []
+            for i in range(self.num_qubits):
+                ops = [qutip.qeye(2)] * self.num_qubits
+                ops[i] = qutip.sigmam()
+                c_ops.append(np.sqrt(gamma) * qutip.tensor(ops))
+
+            # Evolve under noise for a short time with no Hamiltonian
+            h_null = qutip.qzero(self.current_state.dims[0])
+            tlist = [0, self.gate_time]
+            result = qutip.mesolve(h_null, self.current_state, tlist, c_ops, [])
+            self.current_state = result.states[-1]
+
         self.current_step += 1
 
         # --- Calculate Reward ---
@@ -214,7 +245,7 @@ class QuantumPrepEnv(gym.Env):
         return observation, reward, terminated, truncated, info
 
     def _get_obs(self):
-        """Flattens the complex state vector into a real-valued numpy array."""
+        """Flattens the complex density matrix into a real-valued numpy array."""
         state_vector = self.current_state.full().flatten()
         return np.concatenate((state_vector.real, state_vector.imag)).astype(np.float32)
 

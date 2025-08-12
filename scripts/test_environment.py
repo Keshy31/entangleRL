@@ -21,8 +21,8 @@ def main():
     """
     print("--- Testing Quantum State Preparation Environment ---")
     
-    # Create the environment
-    env = QuantumPrepEnv(render_mode='human')
+    # Create the environment with a non-zero noise level
+    env = QuantumPrepEnv(render_mode='human', noise_level=0.1)
     
     # Print the gate map for clarity
     print("\n--- Action Space Gate Map ---")
