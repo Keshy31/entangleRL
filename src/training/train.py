@@ -10,7 +10,7 @@ import pufferlib.emulation
 import pufferlib.clean_ppo
 import pufferlib.vectorization
 from torch.utils.tensorboard import SummaryWriter
-from src.environment.quantum_env import QuantumPrepEnv  # Adjust path if needed
+from src.environment.quantum_env import QuantumPrepEnv
 
 def strtobool(val):
     val = val.lower()
@@ -37,26 +37,47 @@ class Policy(nn.Module):
         hidden = self.encoder(x)
         return self.actor(hidden), self.critic(hidden)
 
+def aggregate_infos(infos):
+    fids = []
+    lengths = []
+    wins = 0
+    for info_batch in infos:  # List of dicts per env
+        if isinstance(info_batch, dict):  # Single
+            if 'fidelity' in info_batch:
+                fids.append(info_batch['fidelity'])
+                lengths.append(info_batch['steps'])
+                if info_batch['fidelity'] > 0.95:
+                    wins += 1
+        else:  # Batched list
+            for inf in info_batch:
+                if inf and 'fidelity' in inf:
+                    fids.append(inf['fidelity'])
+                    lengths.append(inf['steps'])
+                    if inf['fidelity'] > 0.95:
+                        wins += 1
+    return np.mean(fids) if fids else 0, np.mean(lengths) if lengths else 0, wins / len(fids) if fids else 0
+
 def main():
     parser = argparse.ArgumentParser(description="PPO Training for Quantum State Preparation")
-    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--num-envs", type=int, default=128, help="Number of parallel environments")
-    parser.add_argument("--rollout-steps", type=int, default=16, help="Steps per rollout (batch_size = num_envs * rollout_steps)")
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000, help="Total timesteps")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-    parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--num-minibatches", type=int, default=4, help="Minibatches per update")
-    parser.add_argument("--update-epochs", type=int, default=4, help="Epochs per update")
-    parser.add_argument("--clip-coef", type=float, default=0.2, help="PPO clip")
-    parser.add_argument("--ent-coef", type=float, default=0.01, help="Initial entropy coefficient")
-    parser.add_argument("--vf-coef", type=float, default=0.5, help="Value function coefficient")
-    parser.add_argument("--max-grad-norm", type=float, default=0.5, help="Max grad norm")
-    parser.add_argument("--torch-deterministic", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True)
-    parser.add_argument("--cuda", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True)
-    parser.add_argument("--track", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True)
+    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--num-envs", type=int, default=128)
+    parser.add_argument("--rollout-steps", type=int, default=16)  # batch=128*16=2048
+    parser.add_argument("--total-timesteps", type=int, default=1_000_000)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--num-minibatches", type=int, default=4)
+    parser.add_argument("--update-epochs", type=int, default=4)
+    parser.add_argument("--clip-coef", type=float, default=0.2)
+    parser.add_argument("--ent-coef", type=float, default=0.01)
+    parser.add_argument("--vf-coef", type=float, default=0.5)
+    parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    parser.add_argument("--torch-deterministic", type=strtobool, default=True)
+    parser.add_argument("--cuda", type=strtobool, default=True)
+    parser.add_argument("--track", type=strtobool, default=True)
     parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__).rstrip(".py"))
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--test-mode", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True, help="Override for quick test runs")
+    parser.add_argument("--test-mode", type=strtobool, default=False, help="Quick test params")
+    parser.add_argument("--random-agent", type=strtobool, default=False, help="Use random actions for baseline")
 
     args = parser.parse_args()
 
@@ -66,7 +87,7 @@ def main():
         args.total_timesteps = 10000
         args.num_minibatches = 4
         args.update_epochs = 4
-        print("Test mode enabled: Reduced parameters for quick run.")
+        print("Test mode: Reduced params for debug.")
 
     args.batch_size = args.num_envs * args.rollout_steps
 
@@ -82,22 +103,22 @@ def main():
         np.random.seed(args.seed)
 
     # Env Binding
-    env_creator = lambda: QuantumPrepEnv(meta_noise=True)  # Enable meta-RL
-    binding = pufferlib.emulation.Binding(
-        env_creator=env_creator,
-        env_name="QuantumPrepEnv",
-    )
+    env_creator = lambda: QuantumPrepEnv(meta_noise=True)
+    binding = pufferlib.emulation.Binding(env_creator=env_creator, env_name="QuantumPrepEnv")
 
-    # Vectorized Envs (Multiprocessing for parallel)
+    # Vectorized Envs
     envs = pufferlib.vectorization.Multiprocessing(
         binding,
         num_envs=args.num_envs,
-        num_workers=8,  # Adjust based on CPU cores
+        num_workers=8,
         device=device,
     )
+    envs.seed(args.seed)
 
-    # Policy and Trainer
+    # Policy
     policy = Policy(input_size=binding.observation_space.shape[0], action_size=binding.action_space.n)
+
+    # Trainer
     trainer = pufferlib.clean_ppo.Trainer(
         policy=policy,
         envs=envs,
@@ -111,57 +132,46 @@ def main():
         vf_coef=args.vf_coef,
         max_grad_norm=args.max_grad_norm,
         device=device,
+        postprocess_callback=aggregate_infos if not args.random_agent else None,
     )
 
-    # Entropy Decay Scheduler (linear to 0.001)
+    # Entropy Decay
     num_updates = args.total_timesteps // args.batch_size
-    ent_decay = (0.001 - args.ent_coef) / num_updates  # Per update decrement
+    ent_decay_step = (0.001 - args.ent_coef) / num_updates
 
     # Training Loop
     global_step = 0
     start_time = time.time()
-    fid_history = []  # For avg fid
-    ep_lengths = []
-    wins = 0
 
     for update in range(1, num_updates + 1):
-        # Train one update (rollout + compute + optimize)
-        metrics = trainer.train(steps=args.batch_size)  # Handles rollout/GAE/updates
+        if args.random_agent:
+            # Random baseline: Sample actions
+            metrics = trainer.train(steps=args.batch_size, random_actions=True)
+        else:
+            metrics = trainer.train(steps=args.batch_size)
 
-        # Aggregate Quantum Metrics from Metrics/Infos
-        if 'info' in metrics:
-            for info_batch in metrics['info']:  # List of dicts
-                for inf in info_batch:
-                    if 'done' in inf and inf['done']:
-                        fid = inf['fidelity']
-                        fid_history.append(fid)
-                        ep_lengths.append(inf['steps'])
-                        if fid > 0.95:
-                            wins += 1
+        avg_fid, avg_len, win_rate = metrics.get('custom_metrics', (0, 0, 0))  # From callback
 
-        # Log
         if writer:
             writer.add_scalar("losses/value_loss", metrics['value_loss'], global_step)
             writer.add_scalar("losses/policy_loss", metrics['policy_loss'], global_step)
             writer.add_scalar("losses/entropy", metrics['entropy'], global_step)
             writer.add_scalar("losses/kl", metrics['kl'], global_step)
-            if fid_history:
-                writer.add_scalar("charts/avg_fidelity", np.mean(fid_history), global_step)
-                writer.add_scalar("charts/avg_episode_length", np.mean(ep_lengths), global_step)
-                writer.add_scalar("charts/win_rate", wins / len(fid_history), global_step)
+            writer.add_scalar("charts/avg_fidelity", avg_fid, global_step)
+            writer.add_scalar("charts/avg_episode_length", avg_len, global_step)
+            writer.add_scalar("charts/win_rate", win_rate, global_step)
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
         global_step += args.batch_size
 
-        # Entropy Decay
-        trainer.ent_coef += ent_decay
-        trainer.ent_coef = max(trainer.ent_coef, 0.001)  # Clamp
+        # Decay Entropy
+        trainer.ent_coef = max(trainer.ent_coef + ent_decay_step, 0.001)
 
-        # Periodic Save
+        # Save
         if update % 10 == 0:
             torch.save(policy.state_dict(), f"models/{run_name}_update{update}.pth")
 
-    # Final Save and Cleanup
+    # Final Save/Cleanup
     torch.save(policy.state_dict(), f"models/{run_name}.pth")
     print(f"Model saved to models/{run_name}.pth")
     envs.close()
