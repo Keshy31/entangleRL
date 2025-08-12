@@ -6,10 +6,19 @@ import torch
 import torch.nn as nn
 import pufferlib
 import pufferlib.emulation
-import pufferlib.pufferl
-import pufferlib.vectorization
+import sys
+
+from pufferlib.pufferl import PuffeRL
+from pufferlib.vector import make as vector_make
 from torch.utils.tensorboard import SummaryWriter
-from src.environment.quantum_env import QuantumPrepEnv
+from src.environment import QuantumPrepEnv
+
+def make_env(meta_noise=True):
+    """
+    Utility function for creating a GymnasiumPufferEnv
+    """
+    env = QuantumPrepEnv(meta_noise=meta_noise)
+    return pufferlib.emulation.GymnasiumPufferEnv(env=env)
 
 def strtobool(val):
     val = val.lower()
@@ -21,10 +30,10 @@ def strtobool(val):
         raise ValueError(f"invalid truth value {val}")
 
 class CustomPolicy(nn.Module):
-    def __init__(self, observation_space, action_space, hidden_size=64):
+    def __init__(self, env, hidden_size=64):
         super().__init__()
-        input_size = observation_space.shape[0]
-        action_size = action_space.n
+        input_size = env.observation_space.shape[0]
+        action_size = env.action_space.n
         self.encoder = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
@@ -99,25 +108,25 @@ def main():
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
 
-    # Env Binding
-    env_creator = lambda: QuantumPrepEnv(meta_noise=True)  # Align with plan for adaptive noise
-    binding = pufferlib.emulation.Binding(env_creator=env_creator, env_name="QuantumPrepEnv")
+    # Env creator
+    env_creator = make_env
+    env_kwargs = {'meta_noise': True}
 
     # Vectorized Envs
-    vecenv = pufferlib.vectorization.Multiprocessing(
-        binding=binding,
+    vecenv = vector_make(
+        env_creator,
         num_envs=args.num_envs,
-        num_workers=8,  # CPU cores alignment
-        device=device,
+        backend='Multiprocessing',
+        num_workers=8,  # Adjust based on CPU
+        env_kwargs=env_kwargs,
     )
-    vecenv.seed(args.seed)
 
-    # Policy (Custom PyTorch)
-    policy = CustomPolicy(binding.observation_space, binding.action_space)
+    # Policy
+    policy = CustomPolicy(vecenv.driver_env)
 
     # Trainer (PuffeRL)
-    trainer = pufferlib.pufferl.PuffeRL(
-        config=args,  # Pass args as config
+    trainer = PuffeRL(
+        config=args,
         vecenv=vecenv,
         policy=policy,
     )
@@ -135,15 +144,16 @@ def main():
         trainer.train()  # Update on batch
         trainer.mean_and_log()  # Log aggregation
 
-        # Manual Aggregation (if needed, as mean_and_log may handle)
-        avg_fid, avg_len, win_rate = aggregate_metrics(trainer.infos)  # Assume trainer has infos
+        # Custom Aggregation (trainer.infos may be available after evaluate)
+        avg_fid, avg_len, win_rate = aggregate_metrics(trainer.infos)
 
-        # Log Custom
+        # Log Custom to TensorBoard (as PuffeRL may use Neptune/Wandb)
         if writer:
-            writer.add_scalar("losses/value_loss", trainer.value_loss, global_step)
-            writer.add_scalar("losses/policy_loss", trainer.policy_loss, global_step)
-            writer.add_scalar("losses/entropy", trainer.entropy_loss, global_step)
-            writer.add_scalar("losses/kl", trainer.kl, global_step)
+            # Assume trainer has loss attrs; adjust based on actual
+            writer.add_scalar("losses/value_loss", getattr(trainer, 'value_loss', 0), global_step)
+            writer.add_scalar("losses/policy_loss", getattr(trainer, 'policy_loss', 0), global_step)
+            writer.add_scalar("losses/entropy", getattr(trainer, 'entropy_loss', 0), global_step)
+            writer.add_scalar("losses/kl", getattr(trainer, 'kl', 0), global_step)
             writer.add_scalar("charts/avg_fidelity", avg_fid, global_step)
             writer.add_scalar("charts/avg_episode_length", avg_len, global_step)
             writer.add_scalar("charts/win_rate", win_rate, global_step)
