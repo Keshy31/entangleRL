@@ -4,7 +4,8 @@ import numpy as np
 import qutip
 import matplotlib.pyplot as plt
 from qutip.visualization import matrix_histogram
-from qutip.visualization import Bloch
+from qutip import gates
+
 
 class QuantumPrepEnv(gym.Env):
     """
@@ -117,7 +118,7 @@ class QuantumPrepEnv(gym.Env):
         self.axes = [ax1, ax2]
         
         # Create a single Bloch sphere instance to be reused
-        self.bloch = Bloch(axes=self.axes[1])
+        self.bloch = qutip.Bloch(axes=self.axes[1])
         self.bloch.vector_color = ['r', 'g']
         
         plt.ion()
@@ -129,16 +130,19 @@ class QuantumPrepEnv(gym.Env):
             raise NotImplementedError("Gate map is only implemented for 2 qubits.")
         
         # Single qubit gates need to be tensored with Identity for the other qubit
-        h_0 = qutip.tensor(qutip.hadamard_gate(), qutip.qeye(2))
-        h_1 = qutip.tensor(qutip.qeye(2), qutip.hadamard_gate())
+        h_0 = qutip.tensor(gates.hadamard_transform(), qutip.qeye(2))
+        h_1 = qutip.tensor(qutip.qeye(2), gates.hadamard_transform())
         x_0 = qutip.tensor(qutip.sigmax(), qutip.qeye(2))
         x_1 = qutip.tensor(qutip.qeye(2), qutip.sigmax())
         z_0 = qutip.tensor(qutip.sigmaz(), qutip.qeye(2))
         z_1 = qutip.tensor(qutip.qeye(2), qutip.sigmaz())
         
         # Two-qubit gates
-        cnot_01 = qutip.cnot()
-        cnot_10 = qutip.cnot(control=1, target=0)
+        cnot_01 = gates.cnot()
+        # To get CNOT with control=1 and target=0, we sandwich a standard
+        # CNOT with SWAP gates.
+        swap_gate = gates.swap()
+        cnot_10 = swap_gate * cnot_01 * swap_gate
 
         # Identity gate
         identity = qutip.tensor(qutip.qeye(2), qutip.qeye(2))
@@ -225,6 +229,8 @@ class QuantumPrepEnv(gym.Env):
             # Add new states to the sphere
             self.bloch.add_states([state_qbit0, state_qbit1])
             self.bloch.make_sphere() # Redraw the sphere
+
+            self.axes[1].set_title("Bloch Spheres")
 
             # --- Update Titles and Draw ---
             self.fig.suptitle(
