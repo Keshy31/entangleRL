@@ -23,13 +23,18 @@ class QuantumPrepEnv(gym.Env):
 
     ### Action Space
     The agent can choose from a discrete set of quantum gates to apply.
-    - For a 2-qubit system, the actions are:
+    This expanded set provides more control, especially over phase, and is
+    better suited for finding efficient solutions and handling noise.
+    - Type: spaces.Discrete(9)
       - 0: Hadamard gate on Qubit 0
       - 1: Hadamard gate on Qubit 1
       - 2: Pauli-X gate on Qubit 0
       - 3: Pauli-X gate on Qubit 1
-      - 4: CNOT gate (Control: 0, Target: 1)
-    - Type: spaces.Discrete(5)
+      - 4: Pauli-Z gate on Qubit 0
+      - 5: Pauli-Z gate on Qubit 1
+      - 6: CNOT gate (Control: 0, Target: 1)
+      - 7: CNOT gate (Control: 1, Target: 0)
+      - 8: Identity (No-op)
 
     ### Reward
     The reward is designed to guide the agent towards the target state. It's
@@ -67,9 +72,8 @@ class QuantumPrepEnv(gym.Env):
             self.target_state = target_state
             
         # --- Action Space ---
-        # We define a discrete set of gates. For a 2-qubit system:
-        # H_0, H_1, X_0, X_1, CNOT_01
-        self.action_space = spaces.Discrete(5)
+        # We define an expanded discrete set of gates for more control.
+        self.action_space = spaces.Discrete(9)
         self._gate_map = self._create_gate_map()
 
         # --- Observation Space ---
@@ -94,11 +98,20 @@ class QuantumPrepEnv(gym.Env):
         h_1 = qutip.tensor(qutip.qeye(2), qutip.hadamard_gate())
         x_0 = qutip.tensor(qutip.sigmax(), qutip.qeye(2))
         x_1 = qutip.tensor(qutip.qeye(2), qutip.sigmax())
+        z_0 = qutip.tensor(qutip.sigmaz(), qutip.qeye(2))
+        z_1 = qutip.tensor(qutip.qeye(2), qutip.sigmaz())
         
-        # Two-qubit gate
+        # Two-qubit gates
         cnot_01 = qutip.cnot()
+        cnot_10 = qutip.cnot(control=1, target=0)
+
+        # Identity gate
+        identity = qutip.tensor(qutip.qeye(2), qutip.qeye(2))
         
-        return {0: h_0, 1: h_1, 2: x_0, 3: x_1, 4: cnot_01}
+        return {
+            0: h_0, 1: h_1, 2: x_0, 3: x_1, 4: z_0, 5: z_1, 
+            6: cnot_01, 7: cnot_10, 8: identity
+        }
 
     def reset(self, seed=None, options=None):
         """Resets the environment for a new episode."""
