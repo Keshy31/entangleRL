@@ -37,13 +37,15 @@ def main():
     print(env.current_state)
     env.render()
     
-    # Take a few random steps
-    num_steps = 5
-    for i in range(num_steps):
-        # Sample a random action from the action space
-        action = env.action_space.sample()
-        action_name = env._gate_name_map[action]
-        print(f"\n--- Step {i+1}/{num_steps}, Action: {action} ({action_name}) ---")
+    # --- Take Specific Steps to Create Bell State ---
+    print("\n--- Running Deterministic Test in Noisy Environment ---")
+    actions_to_test = [
+        (0, "Hadamard Q0"),
+        (6, "CNOT (0->1)")
+    ]
+    
+    for i, (action, action_name) in enumerate(actions_to_test):
+        print(f"\n--- Step {i+1}/{len(actions_to_test)}, Action: {action} ({action_name}) ---")
         
         # Apply the action
         obs, reward, terminated, truncated, info = env.step(action)
@@ -58,11 +60,8 @@ def main():
         env.render()
         
         if terminated or truncated:
-            print("\nEpisode finished. Resetting environment.")
-            obs, info = env.reset()
-            print("Initial State Vector:")
-            print(env.current_state)
-            env.render()
+            print("\nEpisode finished.")
+            break
 
     print("\n--- Environment Test Complete ---")
     env.close()

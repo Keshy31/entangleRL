@@ -208,14 +208,15 @@ class QuantumPrepEnv(gym.Env):
             gamma = self.noise_level
             c_ops = []
             for i in range(self.num_qubits):
-                ops = [qutip.qeye(2)] * self.num_qubits
-                ops[i] = qutip.sigmam()
-                c_ops.append(np.sqrt(gamma) * qutip.tensor(ops))
+                # Create a fresh list of identity operators for each collapse operator
+                op_list = [qutip.qeye(2)] * self.num_qubits
+                op_list[i] = qutip.sigmap()
+                c_ops.append(np.sqrt(gamma) * qutip.tensor(op_list))
 
             # Evolve under noise for a short time with no Hamiltonian
             h_null = qutip.qzero(self.current_state.dims[0])
             tlist = [0, self.gate_time]
-            result = qutip.mesolve(h_null, self.current_state, tlist, c_ops, [])
+            result = qutip.mesolve(h_null, self.current_state, tlist, c_ops, e_ops=[])
             self.current_state = result.states[-1]
 
         self.current_step += 1
