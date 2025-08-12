@@ -1,6 +1,6 @@
 # Core Dependencies for EntangleRL
 # Quantum Computing
-qutip>=4.7.0                    # Quantum simulation and visualization
+qutip>=5.2.0                 # Quantum simulation and visualization
 numpy>=1.24.0                   # Numerical computing
 scipy>=1.10.0                   # Scientific computing
 

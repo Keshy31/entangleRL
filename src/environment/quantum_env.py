@@ -2,6 +2,9 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import qutip
+import matplotlib.pyplot as plt
+from qutip.visualization import matrix_histogram
+from qutip.visualization import Bloch
 
 class QuantumPrepEnv(gym.Env):
     """
@@ -50,11 +53,14 @@ class QuantumPrepEnv(gym.Env):
     """
     metadata = {'render_modes': ['human'], 'render_fps': 4}
 
-    def __init__(self, num_qubits=2, target_state=None, max_steps=50):
+    def __init__(self, num_qubits=2, target_state=None, max_steps=50, render_mode=None):
         """
         Initializes the quantum environment.
         """
         super().__init__()
+        
+        # Add render_mode to the class
+        self.render_mode = render_mode
 
         self.num_qubits = num_qubits
         self.max_steps = max_steps
@@ -87,6 +93,35 @@ class QuantumPrepEnv(gym.Env):
         self.current_state = None
         self.current_step = None
         self.last_fidelity = None
+
+        # --- Visualization ---
+        self.fig = None
+        self.axes = None
+        self.bloch = None
+        if self.render_mode == "human":
+            self._initialize_plot()
+
+    def _initialize_plot(self):
+        """Initializes the plot for human rendering."""
+        self.fig = plt.figure(figsize=(12, 5))
+        
+        # GridSpec for advanced layout
+        gs = self.fig.add_gridspec(1, 2, width_ratios=[1, 1])
+
+        # Axes for the matrix histogram
+        ax1 = self.fig.add_subplot(gs[0])
+        
+        # Axes for the Bloch sphere (must be 3D)
+        ax2 = self.fig.add_subplot(gs[1], projection='3d')
+        
+        self.axes = [ax1, ax2]
+        
+        # Create a single Bloch sphere instance to be reused
+        self.bloch = Bloch(axes=self.axes[1])
+        self.bloch.vector_color = ['r', 'g']
+        
+        plt.ion()
+        plt.show()
 
     def _create_gate_map(self):
         """Creates the mapping from action index to a QuTiP gate operator."""
@@ -172,8 +207,36 @@ class QuantumPrepEnv(gym.Env):
     def render(self):
         """Renders the environment for human viewing."""
         if self.render_mode == 'human':
-            print(f"Step: {self.current_step}, Fidelity: {self.last_fidelity:.4f}")
+            if self.fig is None:
+                self._initialize_plot()
+
+            # --- 1. Plot Matrix Histogram ---
+            self.axes[0].clear()
+            matrix_histogram(self.current_state, ax=self.axes[0])
+            self.axes[0].set_title("Current State Density Matrix")
+
+            # --- 2. Plot Bloch Spheres ---
+            self.bloch.clear()  # Clear previous states
+            
+            # Partial trace to get individual qubit states
+            state_qbit0 = self.current_state.ptrace(0)
+            state_qbit1 = self.current_state.ptrace(1)
+            
+            # Add new states to the sphere
+            self.bloch.add_states([state_qbit0, state_qbit1])
+            self.bloch.make_sphere() # Redraw the sphere
+
+            # --- Update Titles and Draw ---
+            self.fig.suptitle(
+                f"Step: {self.current_step} | Fidelity: {self.last_fidelity:.4f}", 
+                fontsize=16
+            )
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+
 
     def close(self):
         """Cleans up any resources."""
-        pass
+        if self.fig is not None and plt.fignum_exists(self.fig.number):
+            plt.ioff()
+            plt.close(self.fig)
