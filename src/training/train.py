@@ -53,6 +53,7 @@ if __name__ == '__main__':
 
     # Base config (adapted from project defaults)
     config = {
+        'batch_size': 'auto',  # Added to fix KeyError
         'learning_rate': 3e-4,
         'gamma': 0.99,
         'clip_ratio': 0.2,
