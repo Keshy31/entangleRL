@@ -69,7 +69,8 @@ class QuantumPrepEnv(pufferlib.PufferEnv):
         depolarizing_rate=0.01,
         bit_flip_rate=0.02,
         thermal_occupation=0.1,
-        meta_noise=False
+        meta_noise=False,
+        seed=None  # Added to handle seed passed by PufferLib
     ):
         """
         Initializes the quantum environment.
@@ -80,6 +81,11 @@ class QuantumPrepEnv(pufferlib.PufferEnv):
         self.single_action_space = spaces.Discrete(9)
         self.num_agents = 1  # Single-agent environment
         super().__init__(buf)
+        
+        # Store seed if needed (e.g., for RNG in env)
+        self.seed = seed
+        if self.seed is not None:
+            np.random.seed(self.seed)
         
         # Core environment parameters
         self.num_qubits = num_qubits
@@ -190,6 +196,8 @@ class QuantumPrepEnv(pufferlib.PufferEnv):
 
     def reset(self, seed=None):
         """Resets the environment for a new episode."""
+        if seed is not None:
+            np.random.seed(seed)  # Use reset seed for RNG if provided
         if self.meta_noise:
             self.amplitude_damping_rate = np.random.uniform(0.0, 0.2)
             self.dephasing_rate = np.random.uniform(0.0, 0.1)
