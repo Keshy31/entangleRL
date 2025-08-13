@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from qutip.visualization import matrix_histogram
 from qutip import gates
 import os
+import warnings
+from scipy.linalg import LinAlgWarning
 
 
 class QuantumPrepEnv(gym.Env):
@@ -201,7 +203,10 @@ class QuantumPrepEnv(gym.Env):
         self.current_step = 0
         
         # Initial fidelity is calculated against the starting state.
-        self.last_fidelity = qutip.fidelity(self.current_state, self.target_state)
+        # Suppress LinAlgWarning which is expected for singular density matrices (pure states)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", LinAlgWarning)
+            self.last_fidelity = qutip.fidelity(self.current_state, self.target_state)
         
         observation = self._get_obs()
         info = self._get_info()

@@ -6,19 +6,20 @@ import torch
 import torch.nn as nn
 import pufferlib
 import pufferlib.emulation
+import pufferlib.vector
 import sys
 
-from pufferlib.pufferl import PuffeRL
-from pufferlib.vector import make as vector_make
+from pufferlib.vector import make
+from pufferlib import pufferl
 from torch.utils.tensorboard import SummaryWriter
 from src.environment import QuantumPrepEnv
 
-def make_env(meta_noise=True):
+def make_env(meta_noise=True, **kwargs):
     """
     Utility function for creating a GymnasiumPufferEnv
     """
     env = QuantumPrepEnv(meta_noise=meta_noise)
-    return pufferlib.emulation.GymnasiumPufferEnv(env=env)
+    return pufferlib.emulation.GymnasiumPufferEnv(env=env, **kwargs)
 
 def strtobool(val):
     val = val.lower()
@@ -27,7 +28,7 @@ def strtobool(val):
     elif val in ('n', 'no', 'f', 'false', 'off', '0'):
         return False
     else:
-        raise ValueError(f"invalid truth value {val}")
+        raise argparse.ArgumentTypeError(f"'{val}' is not a valid boolean value")
 
 class CustomPolicy(nn.Module):
     def __init__(self, env, hidden_size=64):
@@ -65,91 +66,80 @@ def aggregate_metrics(infos):
 
 def main():
     parser = argparse.ArgumentParser(description="PPO Training for Quantum State Preparation")
-    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning rate")
-    parser.add_argument("--num-envs", type=int, default=128, help="Number of parallel environments")
-    parser.add_argument("--rollout-steps", type=int, default=16, help="Steps per rollout (batch = num_envs * rollout_steps = 2048)")
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000, help="Total timesteps")
-    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-    parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda")
-    parser.add_argument("--num-minibatches", type=int, default=4, help="Minibatches per update")
-    parser.add_argument("--update-epochs", type=int, default=4, help="Epochs per update")
-    parser.add_argument("--clip-coef", type=float, default=0.2, help="PPO clip")
-    parser.add_argument("--ent-coef", type=float, default=0.01, help="Initial entropy coefficient")
-    parser.add_argument("--vf-coef", type=float, default=0.5, help="Value function coefficient")
-    parser.add_argument("--max-grad-norm", type=float, default=0.5, help="Max grad norm")
-    parser.add_argument("--torch-deterministic", type=strtobool, default=True)
-    parser.add_argument("--cuda", type=strtobool, default=True)
-    parser.add_argument("--track", type=strtobool, default=True)
-    parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__).rstrip(".py"))
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--test-mode", type=strtobool, default=False, help="Quick test params")
-    parser.add_argument("--random-agent", type=strtobool, default=False, help="Use random actions for baseline")
-
+    parser.add_argument("--seed", type=int, default=1, help="seed of the experiment")
+    parser.add_argument("--cuda", action="store_true", help="If toggled, cuda will be enabled")
+    parser.add_argument("--track", action="store_true", help="if toggled, this experiment will be tracked with TensorBoard")
+    parser.add_argument("--test-mode", action="store_true", help="Enable test mode with reduced parameters")
     args = parser.parse_args()
 
+    # Load PufferLib's default config and update it with our args
+    config = pufferl.load_config('default')['train']
+    config.seed = args.seed
+    config.cuda = args.cuda
+    config.track = args.track
+
     if args.test_mode:
-        args.num_envs = 4
-        args.rollout_steps = 32
-        args.total_timesteps = 10000
-        args.num_minibatches = 4
-        args.update_epochs = 4
         print("Test mode enabled: Reduced parameters for quick debug run.")
+        config.num_envs = 8
+        config.bptt_horizon = 32
+        config.total_timesteps = 10000
+        config.num_minibatches = 4
+        config.num_workers = 4
+        config.update_epochs = 4
+        config.exp_name = "test_run"
 
-    args.batch_size = args.num_envs * args.rollout_steps
-
-    run_name = f"QuantumPrep_{args.exp_name}_{args.seed}_{int(time.time())}"
-    writer = SummaryWriter(f"runs/{run_name}") if args.track else None
+    # Set up experiment tracking
+    run_name = f"QuantumPrep_{config.exp_name}_{config.seed}_{int(time.time())}"
+    writer = SummaryWriter(f"runs/{run_name}") if config.track else None
     if writer:
-        writer.add_text("hyperparameters", "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])))
+        writer.add_text("hyperparameters", "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in config.items()])))
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    if args.torch_deterministic:
+    # Set device and seed
+    device = torch.device("cuda" if torch.cuda.is_available() and config.cuda else "cpu")
+    config.device = device
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    if config.torch_deterministic:
         torch.backends.cudnn.deterministic = True
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
 
     # Env creator
     env_creator = make_env
     env_kwargs = {'meta_noise': True}
 
     # Vectorized Envs
-    vecenv = vector_make(
-        env_creator,
-        num_envs=args.num_envs,
+    vecenv = make(
+        env_creator=make_env,
+        num_envs=config.num_envs,
         backend='Multiprocessing',
-        num_workers=8,  # Adjust based on CPU
+        num_workers=config.num_workers,
         env_kwargs=env_kwargs,
     )
 
     # Policy
     policy = CustomPolicy(vecenv.driver_env)
 
-    # Trainer (PuffeRL)
-    trainer = PuffeRL(
-        config=args,
+    # Trainer (PuffeRL) - Pass the policy as the 'agent'
+    trainer = pufferl.PuffeRL(
+        config=config,
+        agent=policy,
         vecenv=vecenv,
-        policy=policy,
     )
 
-    # Entropy Decay
-    num_updates = args.total_timesteps // args.batch_size
-    ent_decay_step = (0.001 - args.ent_coef) / num_updates
-
     # Training Loop
+    num_updates = config.total_timesteps // (config.num_envs * config.bptt_horizon)
     global_step = 0
     start_time = time.time()
 
     for update in range(1, num_updates + 1):
-        trainer.evaluate()  # Collect interactions
-        trainer.train()  # Update on batch
-        trainer.mean_and_log()  # Log aggregation
+        trainer.evaluate()
+        trainer.train()
+        trainer.mean_and_log()
 
-        # Custom Aggregation (trainer.infos may be available after evaluate)
+        # Custom Aggregation
         avg_fid, avg_len, win_rate = aggregate_metrics(trainer.infos)
 
-        # Log Custom to TensorBoard (as PuffeRL may use Neptune/Wandb)
+        # Log Custom to TensorBoard
         if writer:
-            # Assume trainer has loss attrs; adjust based on actual
             writer.add_scalar("losses/value_loss", getattr(trainer, 'value_loss', 0), global_step)
             writer.add_scalar("losses/policy_loss", getattr(trainer, 'policy_loss', 0), global_step)
             writer.add_scalar("losses/entropy", getattr(trainer, 'entropy_loss', 0), global_step)
@@ -159,13 +149,10 @@ def main():
             writer.add_scalar("charts/win_rate", win_rate, global_step)
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        global_step += args.batch_size
-
-        # Entropy Decay
-        trainer.ent_coef = max(trainer.ent_coef + ent_decay_step, 0.001)
+        global_step += (config.num_envs * config.bptt_horizon)
 
         # Save
-        if update % 10 == 0:
+        if update % int(num_updates / 10) == 0:
             trainer.save_checkpoint(f"models/{run_name}_update{update}.pt")
 
     # Final Save/Cleanup
