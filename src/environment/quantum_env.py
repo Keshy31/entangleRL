@@ -8,9 +8,10 @@ from qutip import gates
 import os
 import warnings
 from scipy.linalg import LinAlgWarning
+import pufferlib  # Import for PufferEnv
 
 
-class QuantumPrepEnv(gym.Env):
+class QuantumPrepEnv(pufferlib.PufferEnv):
     """
     Custom Gymnasium Environment for Quantum State Preparation.
 
@@ -57,6 +58,7 @@ class QuantumPrepEnv(gym.Env):
 
     def __init__(
         self, 
+        buf=None,  # Added for PufferEnv
         num_qubits=2, 
         target_state=None, 
         max_steps=50, 
@@ -72,7 +74,12 @@ class QuantumPrepEnv(gym.Env):
         """
         Initializes the quantum environment.
         """
-        super().__init__()
+        self.single_observation_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(6,), dtype=np.float32
+        )
+        self.single_action_space = spaces.Discrete(9)
+        self.num_agents = 1  # Single-agent environment
+        super().__init__(buf)
         
         # Core environment parameters
         self.num_qubits = num_qubits
@@ -102,15 +109,8 @@ class QuantumPrepEnv(gym.Env):
             # Ensure target is a density matrix
             self.target_state = target_state if target_state.isoper else qutip.ket2dm(target_state)
             
-        # --- Action Space ---
-        self.action_space = spaces.Discrete(9)
+        # --- Gate Maps ---
         self._gate_map, self._gate_name_map = self._create_gate_maps()
-
-        # --- Observation Space (Partial: Pauli Expectations) ---
-        obs_shape = 6  # ⟨σ_x0⟩, ⟨σ_y0⟩, ⟨σ_z0⟩, ⟨σ_x1⟩, ⟨σ_y1⟩, ⟨σ_z1⟩
-        self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(obs_shape,), dtype=np.float32
-        )
 
         # Initialize state variables
         self.current_state = None
@@ -188,10 +188,8 @@ class QuantumPrepEnv(gym.Env):
 
         return gate_map, gate_name_map
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None):
         """Resets the environment for a new episode."""
-        super().reset(seed=seed)
-        
         if self.meta_noise:
             self.amplitude_damping_rate = np.random.uniform(0.0, 0.2)
             self.dephasing_rate = np.random.uniform(0.0, 0.1)
@@ -211,10 +209,13 @@ class QuantumPrepEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
         
-        return observation, info
+        # Fill shared buffers for PufferLib
+        self.observations[0] = observation
+        return self.observations, [info]
 
     def step(self, action):
         """Executes one time step by applying a quantum gate."""
+        action = action[0]  # Extract scalar action for single-agent
         
         # --- Apply Ideal Gate ---
         gate = self._gate_map[action]
@@ -294,7 +295,13 @@ class QuantumPrepEnv(gym.Env):
         observation = self._get_obs()
         info = self._get_info()
 
-        return observation, reward, terminated, truncated, info
+        # Fill shared buffers for PufferLib
+        self.observations[0] = observation
+        self.rewards[0] = reward
+        self.terminals[0] = terminated
+        self.truncations[0] = truncated
+
+        return self.observations, self.rewards, self.terminals, self.truncations, [info]
 
     def _get_obs(self):
         """Returns partial observations: Pauli expectation values."""
@@ -350,7 +357,6 @@ class QuantumPrepEnv(gym.Env):
             # Save the figure instead of showing it interactively
             save_path = os.path.join(self.render_path, f"step_{self.current_step}.png")
             self.fig.savefig(save_path)
-
 
     def close(self):
         """Cleans up any resources."""
