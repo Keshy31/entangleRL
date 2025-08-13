@@ -4,45 +4,25 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-import pufferlib
-import pufferlib.emulation
-import pufferlib.vector
-import sys
-
-from pufferlib.vector import make
-from pufferlib import pufferl
 from torch.utils.tensorboard import SummaryWriter
-from src.environment import QuantumPrepEnv
-
-def make_env(meta_noise=True, **kwargs):
-    """
-    Utility function for creating a GymnasiumPufferEnv
-    """
-    env = QuantumPrepEnv(meta_noise=meta_noise)
-    return pufferlib.emulation.GymnasiumPufferEnv(env=env, **kwargs)
-
-def strtobool(val):
-    val = val.lower()
-    if val in ('y', 'yes', 't', 'true', 'on', '1'):
-        return True
-    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError(f"'{val}' is not a valid boolean value")
+import pufferlib.vector
+import pufferlib.frameworks.cleanrl  # Assuming for Policy utils if needed
+from pufferlib import pufferl
+from src.environment.quantum_env import QuantumPrepEnv  # Adjust path
 
 class CustomPolicy(nn.Module):
-    def __init__(self, env, hidden_size=64):
+    def __init__(self, env):
         super().__init__()
-        input_size = env.observation_space.shape[0]
-        action_size = env.action_space.n
+        input_size = env.single_observation_space.shape[0]
+        action_size = env.single_action_space.n
         self.encoder = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
+            nn.Linear(input_size, 64),
             nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
+            nn.Linear(64, 64),
             nn.ReLU()
         )
-        self.actor = nn.Linear(hidden_size, action_size)
-        self.critic = nn.Linear(hidden_size, 1)
+        self.actor = nn.Linear(64, action_size)
+        self.critic = nn.Linear(64, 1)
 
     def forward(self, x):
         hidden = self.encoder(x)
@@ -64,7 +44,7 @@ def aggregate_metrics(infos):
     win_rate = wins / len(fids) if fids else 0
     return avg_fid, avg_len, win_rate
 
-def main():
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PPO Training for Quantum State Preparation")
     parser.add_argument("--seed", type=int, default=1, help="seed of the experiment")
     parser.add_argument("--cuda", action="store_true", help="If toggled, cuda will be enabled")
@@ -72,95 +52,96 @@ def main():
     parser.add_argument("--test-mode", action="store_true", help="Enable test mode with reduced parameters")
     args = parser.parse_args()
 
-    # Load PufferLib's default config and update it with our args
-    config = pufferl.load_config('default')['train']
-    config.seed = args.seed
-    config.cuda = args.cuda
-    config.track = args.track
+    # Base config (adapted from project defaults)
+    config = {
+        'learning_rate': 3e-4,
+        'gamma': 0.99,
+        'clip_ratio': 0.2,
+        'entropy_coef': 0.01,
+        'value_coef': 0.5,
+        'update_epochs': 4,
+        'num_minibatches': 4,
+        'total_timesteps': 1_000_000,
+        'num_envs': 128,
+        'bptt_horizon': 128,  # Steps per rollout
+        'num_workers': 8,
+        'max_grad_norm': 0.5,
+        'torch_deterministic': True,
+        'cuda': args.cuda,
+        'seed': args.seed,
+        'track': args.track,
+    }
 
     if args.test_mode:
         print("Test mode enabled: Reduced parameters for quick debug run.")
-        config.num_envs = 8
-        config.bptt_horizon = 32
-        config.total_timesteps = 10000
-        config.num_minibatches = 4
-        config.num_workers = 4
-        config.update_epochs = 4
-        config.exp_name = "test_run"
+        config['num_envs'] = 8
+        config['bptt_horizon'] = 32
+        config['total_timesteps'] = 10000
+        config['num_workers'] = 2
+        config['update_epochs'] = 2
+        config['num_minibatches'] = 2
 
     # Set up experiment tracking
-    run_name = f"QuantumPrep_{config.exp_name}_{config.seed}_{int(time.time())}"
-    writer = SummaryWriter(f"runs/{run_name}") if config.track else None
+    run_name = f"QuantumPrep_PPO_{config['seed']}_{int(time.time())}"
+    log_dir = f"runs/{run_name}"
+    writer = SummaryWriter(log_dir) if config['track'] else None
     if writer:
         writer.add_text("hyperparameters", "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in config.items()])))
 
     # Set device and seed
-    device = torch.device("cuda" if torch.cuda.is_available() and config.cuda else "cpu")
-    config.device = device
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
-    if config.torch_deterministic:
+    device = 'cuda' if torch.cuda.is_available() and config['cuda'] else 'cpu'
+    torch.manual_seed(config['seed'])
+    np.random.seed(config['seed'])
+    if config['torch_deterministic']:
         torch.backends.cudnn.deterministic = True
 
-    # Env creator
-    env_creator = make_env
-    env_kwargs = {'meta_noise': True}
-
-    # Vectorized Envs
-    vecenv = make(
-        env_creator=make_env,
-        num_envs=config.num_envs,
-        backend='Multiprocessing',
-        num_workers=config.num_workers,
-        env_kwargs=env_kwargs,
+    # Vectorized Envs (directly with PufferEnv class)
+    vecenv = pufferlib.vector.make(
+        QuantumPrepEnv,
+        num_envs=config['num_envs'],
+        num_workers=config['num_workers'],
+        batch_size=config['num_envs'],  # Full batch
+        backend=pufferlib.vector.Multiprocessing,
+        env_kwargs={'meta_noise': True}  # Enable meta-RL
     )
 
     # Policy
-    policy = CustomPolicy(vecenv.driver_env)
+    policy = CustomPolicy(vecenv.driver_env).to(device)
 
-    # Trainer (PuffeRL) - Pass the policy as the 'agent'
-    trainer = pufferl.PuffeRL(
-        config=config,
-        agent=policy,
-        vecenv=vecenv,
-    )
+    # Trainer
+    trainer = pufferl.PuffeRL(config, vecenv, policy)
 
     # Training Loop
-    num_updates = config.total_timesteps // (config.num_envs * config.bptt_horizon)
+    num_updates = config['total_timesteps'] // (config['num_envs'] * config['bptt_horizon'])
     global_step = 0
     start_time = time.time()
-
     for update in range(1, num_updates + 1):
-        trainer.evaluate()
-        trainer.train()
-        trainer.mean_and_log()
+        trainer.evaluate()  # Optional eval
+        logs = trainer.train()  # Main training step
 
-        # Custom Aggregation
+        # Custom metrics from infos
         avg_fid, avg_len, win_rate = aggregate_metrics(trainer.infos)
 
-        # Log Custom to TensorBoard
+        # Log
         if writer:
-            writer.add_scalar("losses/value_loss", getattr(trainer, 'value_loss', 0), global_step)
-            writer.add_scalar("losses/policy_loss", getattr(trainer, 'policy_loss', 0), global_step)
-            writer.add_scalar("losses/entropy", getattr(trainer, 'entropy_loss', 0), global_step)
-            writer.add_scalar("losses/kl", getattr(trainer, 'kl', 0), global_step)
+            writer.add_scalar("losses/value_loss", logs.get('value_loss', 0), global_step)
+            writer.add_scalar("losses/policy_loss", logs.get('policy_loss', 0), global_step)
+            writer.add_scalar("losses/entropy", logs.get('entropy_loss', 0), global_step)
+            writer.add_scalar("losses/approx_kl", logs.get('approx_kl', 0), global_step)
             writer.add_scalar("charts/avg_fidelity", avg_fid, global_step)
             writer.add_scalar("charts/avg_episode_length", avg_len, global_step)
             writer.add_scalar("charts/win_rate", win_rate, global_step)
             writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        global_step += (config.num_envs * config.bptt_horizon)
+        global_step += config['num_envs'] * config['bptt_horizon']
 
-        # Save
-        if update % int(num_updates / 10) == 0:
-            trainer.save_checkpoint(f"models/{run_name}_update{update}.pt")
+        # Checkpoint
+        if update % max(1, num_updates // 10) == 0:
+            torch.save(policy.state_dict(), f"models/{run_name}_update{update}.pt")
 
-    # Final Save/Cleanup
-    trainer.save_checkpoint(f"models/{run_name}.pt")
+    # Final save and cleanup
+    torch.save(policy.state_dict(), f"models/{run_name}.pt")
     print(f"Model saved to models/{run_name}.pt")
-    trainer.close()
     if writer:
         writer.close()
-
-if __name__ == "__main__":
-    main()
+    trainer.close()
