@@ -1,4 +1,4 @@
-import gymnasium as gym
+import gymnasium
 from gymnasium import spaces
 import numpy as np
 import qutip
@@ -9,7 +9,7 @@ import os
 import warnings
 from scipy.linalg import LinAlgWarning
 
-class QuantumPrepEnv(gym.Env):
+class QuantumPrepEnv(gymnasium.Env):
     """
     Custom Gymnasium Environment for Quantum State Preparation.
     The agent's goal is to apply a sequence of quantum gates to transform
