@@ -71,7 +71,7 @@ class VisualizationEngine:
         for i, prob in enumerate(probs):
             height = prob * 200  # Scale
             pygame.draw.rect(self.screen, (0, 0, 255), (400 + i*bar_width, 300 - height, bar_width, height))
-            label = self.font.render(self.env._gate_name_map[i][:3], True, (0, 0, 0))  # Abbrev
+            label = self.font.render(self.env.env._gate_name_map[i][:3], True, (0, 0, 0))  # Abbrev -- Access raw env
             self.screen.blit(label, (400 + i*bar_width, 310))
         # Fidelity Meter: Horizontal bar
         fid = info['fidelity']
@@ -85,8 +85,8 @@ class VisualizationEngine:
     def generate_bloch_fig(self):
         fig, ax = plt.subplots(figsize=(4, 4), subplot_kw={'projection': '3d'})
         b = qutip.Bloch(fig=fig, axes=ax)
-        state_q0 = self.env.current_state.ptrace(0)
-        state_q1 = self.env.current_state.ptrace(1)
+        state_q0 = self.env.env.current_state.ptrace(0)  # Access raw env
+        state_q1 = self.env.env.current_state.ptrace(1)  # Access raw env
         b.add_states([state_q0, state_q1])
         b.make_sphere()
         return fig
