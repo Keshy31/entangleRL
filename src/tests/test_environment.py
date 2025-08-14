@@ -1,7 +1,7 @@
 import sys
 import os
 
-import gymnasium as gym
+import gymnasium
 from src.environment import QuantumPrepEnv
 import numpy as np
 import json
