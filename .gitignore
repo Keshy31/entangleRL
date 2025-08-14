@@ -21,6 +21,7 @@ models/*.pth
 models/*.pt
 renders/
 runs/
+experiments/
 
 # IDE specific
 .vscode/
