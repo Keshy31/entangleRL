@@ -54,11 +54,11 @@ class QuantumPrepEnv(gymnasium.Env):
         max_steps=50,
         render_mode=None,
         gate_time=0.1,
-        amplitude_damping_rate=0.2,
-        dephasing_rate=0.1,
-        depolarizing_rate=0.01,
-        bit_flip_rate=0.02,
-        thermal_occupation=0.1,
+        amplitude_damping_rate=0.05,
+        dephasing_rate=0.001,
+        depolarizing_rate=0.001,
+        bit_flip_rate=0.001,
+        thermal_occupation=0.001,
         meta_noise=False,
         seed=None  # Added to handle seed passed by PufferLib
     ):
@@ -109,6 +109,7 @@ class QuantumPrepEnv(gymnasium.Env):
         self.current_state = None
         self.current_step = None
         self.last_fidelity = None
+
         # --- Visualization ---
         self.render_mode = render_mode
         self.fig = None
@@ -118,6 +119,7 @@ class QuantumPrepEnv(gymnasium.Env):
             self.render_path = "renders"
             os.makedirs(self.render_path, exist_ok=True)
             self._initialize_plot()
+
     def _initialize_plot(self):
         """Initializes the plot for human rendering."""
         self.fig = plt.figure(figsize=(12, 5))
@@ -174,6 +176,7 @@ class QuantumPrepEnv(gymnasium.Env):
             8: "Identity",
         }
         return gate_map, gate_name_map
+    
     def reset(self, seed=None, options=None):
         """Resets the environment for a new episode."""
         if seed is not None:
@@ -259,13 +262,14 @@ class QuantumPrepEnv(gymnasium.Env):
        
         # Reward is the improvement in fidelity squared, plus a step penalty.
         reward = (current_fidelity**2) - (self.last_fidelity**2)
-        reward -= 0.01 # Small penalty to encourage efficiency
+        reward += 0.05 * current_fidelity
+        reward -= 0.01 * self.current_step # Small penalty to encourage efficiency
        
         self.last_fidelity = current_fidelity
        
         # --- Check for Termination ---
         terminated = False
-        if current_fidelity > 0.99:
+        if current_fidelity > 0.90:
             reward += 1.0  # Bonus for winning
             terminated = True
        
