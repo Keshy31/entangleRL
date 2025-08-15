@@ -261,8 +261,8 @@ class QuantumPrepEnv(gymnasium.Env):
         current_fidelity = qutip.fidelity(self.current_state, self.target_state)
        
         # Reward is the improvement in fidelity squared, plus a step penalty.
-        reward = (current_fidelity**2) - (self.last_fidelity**2)
-        reward += 0.05 * current_fidelity
+        reward = ((current_fidelity**2) - (self.last_fidelity**2))* 10
+        reward += 0.05 * (current_fidelity - self.last_fidelity)
         reward -= 0.01 * self.current_step # Small penalty to encourage efficiency
        
         self.last_fidelity = current_fidelity
