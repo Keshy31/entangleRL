@@ -266,13 +266,13 @@ class QuantumPrepEnv(gymnasium.Env):
         reward -= 0.008 * self.current_step
         
         if current_fidelity > 0.70:
-            reward += 1.0
+            reward += 0.5
        
         self.last_fidelity = current_fidelity
        
         # --- Check for Termination ---
         terminated = False
-        if current_fidelity > 0.97:
+        if current_fidelity > 0.95:
             reward += 1.0  # Bonus for winning
             terminated = True
         truncated = False
