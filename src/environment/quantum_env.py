@@ -51,7 +51,7 @@ class QuantumPrepEnv(gymnasium.Env):
         self,
         num_qubits=2,
         target_state=None,
-        max_steps=50,
+        max_steps=30,
         render_mode=None,
         gate_time=0.1,
         amplitude_damping_rate=0.05,
@@ -261,25 +261,29 @@ class QuantumPrepEnv(gymnasium.Env):
         current_fidelity = qutip.fidelity(self.current_state, self.target_state)
        
         # Reward is the improvement in fidelity squared, plus a step penalty.
-        reward = ((current_fidelity**2) - (self.last_fidelity**2))* 10
-        reward += 0.05 * (current_fidelity - self.last_fidelity)
-        reward -= 0.01 * self.current_step # Small penalty to encourage efficiency
+        reward = 15 * ((current_fidelity**2) - (self.last_fidelity**2))
+        reward += 0.08 * (current_fidelity - self.last_fidelity)
+        reward -= 0.008 * self.current_step
+        
+        if current_fidelity > 0.70:
+            reward += 1.0
        
         self.last_fidelity = current_fidelity
        
         # --- Check for Termination ---
         terminated = False
-        if current_fidelity > 0.90:
+        if current_fidelity > 0.97:
             reward += 1.0  # Bonus for winning
             terminated = True
-       
         truncated = False
         if self.current_step >= self.max_steps:
             truncated = True
         observation = self._get_obs()
-        info = self._get_info()
+
+        info = self._get_info() if terminated or truncated else {}
        
         return observation, reward, terminated, truncated, info
+    
     def _get_obs(self):
         """Returns partial observations: Pauli expectation values."""
         sx0 = qutip.tensor(qutip.sigmax(), qutip.qeye(2))
