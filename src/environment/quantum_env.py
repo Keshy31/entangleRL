@@ -5,6 +5,7 @@ import qutip
 import matplotlib.pyplot as plt
 from qutip.visualization import matrix_histogram
 from qutip import gates
+from qutip import concurrence
 import os
 import warnings
 from scipy.linalg import LinAlgWarning
@@ -54,11 +55,11 @@ class QuantumPrepEnv(gymnasium.Env):
         max_steps=30,
         render_mode=None,
         gate_time=0.1,
-        amplitude_damping_rate=0.05,
-        dephasing_rate=0.001,
-        depolarizing_rate=0.001,
-        bit_flip_rate=0.001,
-        thermal_occupation=0.001,
+        amplitude_damping_rate=0.0,
+        dephasing_rate=0.0,
+        depolarizing_rate=0.0,
+        bit_flip_rate=0.0,
+        thermal_occupation=0.0,
         meta_noise=False,
         seed=None  # Added to handle seed passed by PufferLib
     ):
@@ -109,6 +110,8 @@ class QuantumPrepEnv(gymnasium.Env):
         self.current_state = None
         self.current_step = None
         self.last_fidelity = None
+        
+        warnings.filterwarnings('ignore', category=LinAlgWarning)
 
         # --- Visualization ---
         self.render_mode = render_mode
@@ -190,7 +193,10 @@ class QuantumPrepEnv(gymnasium.Env):
        
         self.current_state = self.initial_state.copy()
         self.current_step = 0
-       
+
+        self.last_ent = 0
+        self.last_superpos = 0
+
         # Initial fidelity is calculated against the starting state.
         # Suppress LinAlgWarning which is expected for singular density matrices (pure states)
         with warnings.catch_warnings():
@@ -201,6 +207,7 @@ class QuantumPrepEnv(gymnasium.Env):
         info = self._get_info()
        
         return observation, info
+    
     def step(self, action):
         """Executes one time step by applying a quantum gate."""
        
@@ -257,30 +264,43 @@ class QuantumPrepEnv(gymnasium.Env):
             result = qutip.mesolve(h_null, self.current_state, tlist, c_ops, e_ops=[])
             self.current_state = result.states[-1]
         self.current_step += 1
+       
         # --- Calculate Reward ---
-        current_fidelity = qutip.fidelity(self.current_state, self.target_state)
-       
-        # Reward is the improvement in fidelity squared, plus a step penalty.
-        reward = current_fidelity ** 8
-        reward -= 0.002 * self.current_step
-        reward += 0.001 * (current_fidelity - self.last_fidelity)
+        # Fidelity bonus
+        fidelity = qutip.fidelity(self.current_state, self.target_state)
+        reward = 1.5 * (fidelity - self.last_fidelity)
+        if (fidelity - self.last_fidelity) > 0:
+            reward += 0.5 * fidelity ** 2
         
-        if current_fidelity > 0.75:
-            reward += 0.5
-       
-        self.last_fidelity = current_fidelity
+        self.last_fidelity = fidelity
+        
+        if fidelity > 0.75:
+            reward += 0.3
+
+        # Superposition bonus
+        superpos = np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full()))))  # Your superpos
+        reward += 0.4 * (superpos - self.last_superpos)  # Delta, coefficient for balance (see proportions below)
+        self.last_superpos = superpos  # Store for next step
+
+        # Entanglement bonus
+        ent = concurrence(self.current_state)
+        reward += 0.35 * ent - self.last_ent
+        self.last_ent = ent
+
+        # Step penalty
+        reward -= 0.05 * self.current_step
        
         # --- Check for Termination ---
         terminated = False
-        if current_fidelity > 0.95:
-            reward += 1.0  # Bonus for winning
+        if fidelity > 0.95:
+            reward += 1.5  # Bonus for winning
             terminated = True
         truncated = False
         if self.current_step >= self.max_steps:
             truncated = True
         observation = self._get_obs()
 
-        info = self._get_info() if terminated or truncated else {}
+        info = self._get_info() if terminated or truncated else self._get_info()
        
         return observation, reward, terminated, truncated, info
     
@@ -316,8 +336,8 @@ class QuantumPrepEnv(gymnasium.Env):
             "expectation_sx1": obs[3],  # <σ_x1>
             "expectation_sy1": obs[4],  # <σ_y1>
             "expectation_sz1": obs[5],  # <σ_z1>
-            # Optional: Coherence measure (e.g., off-diagonal sum for entanglement hint)
-            "coherence": np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full())))),  # Simple off-diagonal magnitude
+            "entanglement": concurrence(self.current_state),
+            "superpos": np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full()))))
         }
 
     def render(self):
