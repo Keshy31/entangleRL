@@ -22,14 +22,14 @@ args['train']['env'] = 'quantum_prep'  # Matches your Gym env ID
 args['train']['use_rnn'] = True  # Enable RNN for sequences (quantum prep benefits from memory)
 args['train']['seed'] = 69  # For reproducibility
 # Batch and Horizon (Increase for better stats/gradients; your bptt=128 is good, but scale batch up)
-args['train']['batch_size'] = 16384  # Double your 8192; larger batches = longer GPU kernels, better util. Auto-adjusts with bptt.
+args['train']['batch_size'] = 8192  # Double your 8192; larger batches = longer GPU kernels, better util. Auto-adjusts with bptt.
 args['train']['bptt_horizon'] = 'auto'  # Keep—long enough for quantum sequences (e.g., 5-10 gates to Bell state) without OOM.
 args['train']['minibatch_size'] = 1024  # Double your 256; processes more data per gradient step for stability.
 args['train']['max_minibatch_size'] = 4096  # Double your 1024; cap to avoid VRAM spikes on RTX 4080.
 # Training Hyperparams (Core tweaks here for better learning)
 args['train']['total_timesteps'] = 250000  # 5x your 100k; should take ~30-60 min on GPU. Scale to 1e6+ once stable.
 args['train']['learning_rate'] = 9e-4  # MUCH lower than your 0.015 (1.5e-2 is aggressive and can cause NaNs or no updates). Standard PPO start; decay via scheduler if needed.
-args['train']['update_epochs'] = 12  # Double your 4; more passes over data = extended GPU compute without extra env steps.
+args['train']['update_epochs'] = 8  # Double your 4; more passes over data = extended GPU compute without extra env steps.
 args['train']['gamma'] = 0.99  # Discount—high for long-term fidelity rewards.
 args['train']['gae_lambda'] = 0.95  # For advantages; helps with variance in noisy quantum envs.
 args['train']['clip_coef'] = 0.2  # Standard PPO clip; encourages proximal updates to fix your KL=0.
@@ -70,7 +70,7 @@ policy = pufferlib.models.LSTMWrapper(
 trainer = PuffeRL(args['train'], vecenv, policy)
 
 # Initialize TensorBoard writer
-writer = SummaryWriter(log_dir='logs/tensorboard/quantum_prep_rnn_250k_no_noise_9e-4_16384_12')  # Create a log dir; run tensorboard --logdir=logs/tensorboard to view
+writer = SummaryWriter(log_dir='logs/tensorboard/quantum_prep_rnn_250k_no_noise_9e-4_8192_8')  # Create a log dir; run tensorboard --logdir=logs/tensorboard to view
 
 # Extract total_timesteps for decay calculation (outside loop for efficiency)
 total_timesteps = args['train']['total_timesteps']
@@ -129,7 +129,7 @@ while trainer.global_step < total_timesteps:  # Use variable for brevity
     writer.add_scalar('Hyperparams/Ent_Coef', trainer.config['ent_coef'], step)
 
 ## Save the policy
-torch.save(trainer.policy.state_dict(), 'models/ppo_quantum_rnn_250k_no_noise_9e-4_16384_12.pth')
+torch.save(trainer.policy.state_dict(), 'models/ppo_quantum_rnn_250k_no_noise_9e-4_8192_8.pth')
 
 ## Print the dashboard (keep for console reference)
 trainer.print_dashboard()
