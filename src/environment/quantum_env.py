@@ -300,7 +300,7 @@ class QuantumPrepEnv(gymnasium.Env):
             truncated = True
         observation = self._get_obs()
 
-        info = self._get_info() if terminated or truncated else self._get_info()
+        info = self._get_info() if terminated or truncated else {}
        
         return observation, reward, terminated, truncated, info
     
