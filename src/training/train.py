@@ -30,7 +30,7 @@ args['train']['max_minibatch_size'] = 4096  # Double your 1024; cap to avoid VRA
 args['train']['total_timesteps'] = 250000  # 5x your 100k; should take ~30-60 min on GPU. Scale to 1e6+ once stable.
 args['train']['learning_rate'] = 7e-4  # MUCH lower than your 0.015 (1.5e-2 is aggressive and can cause NaNs or no updates). Standard PPO start; decay via scheduler if needed.
 args['train']['update_epochs'] = 12  # Double your 4; more passes over data = extended GPU compute without extra env steps.
-args['train']['gamma'] = 0.995  # Discount—high for long-term fidelity rewards.
+args['train']['gamma'] = 0.99  # Discount—high for long-term fidelity rewards.
 args['train']['gae_lambda'] = 0.95  # For advantages; helps with variance in noisy quantum envs.
 args['train']['clip_coef'] = 0.2  # Standard PPO clip; encourages proximal updates to fix your KL=0.
 args['train']['ent_coef'] = 0.01  # Start higher than default (0.0) to boost exploration, then decay to 0.001 over epochs for exploitation.  # <-- This is initial; will decay in loop
