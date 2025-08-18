@@ -59,6 +59,40 @@ def main():
             print("\nEpisode finished.")
             break
 
+    # Add to main():
+    paths_to_test = [
+        # Optimal: H0 + CNOT0->1 (your current)
+        {"name": "Optimal Bell", "actions": [0, 6], "expected": {"fidelity": (0.99, 1.0), "ent": (0.99, 1.0)}},
+        
+        # Suboptimal: Extra gates (H0 + X1 + CNOT0->1) – should reach ~1 but longer, test penalty
+        {"name": "Suboptimal with Flip", "actions": [0, 3, 6], "expected": {"fidelity": (0.99, 1.0), "steps": 3}},
+        
+        # Cycle: X0 + X0 (back to start) – test delta~0, penalty for waste
+        {"name": "Cycle Waste", "actions": [2, 2], "expected": {"fidelity": (0.7, 0.71), "reward_delta": "~0"}},
+        
+        # Phase Test: H0 + Z0 + CNOT – should make Bell variant (phase diff), fidelity~1 if target allows phases
+        {"name": "Phase Variant", "actions": [0, 4, 6], "expected": {"fidelity": (0.99, 1.0)}},
+        
+        # Random-Like (Agent Early): Identity x3 – test penalty accumulation
+        {"name": "No-Op Stall", "actions": [8, 8, 8], "expected": {"steps": 3, "reward": "<0"}},
+        
+        # Failure: Only CNOT without superpos – no change, low fidelity
+        {"name": "No Superpos CNOT", "actions": [6], "expected": {"fidelity": (0.7, 0.71)}}
+    ]
+
+    for path in paths_to_test:
+        print(f"\n--- Testing Path: {path['name']} ---")
+        env.reset()
+        cumulative_reward = 0
+        for action in path['actions']:
+            obs, reward, term, trunc, info = env.step(action)
+            cumulative_reward += reward
+            print(f"Action {action}: Reward {reward:.4f}, Fidelity {info['fidelity']:.4f}, Ent {info['entanglement']:.4f}")
+        # Assert-like checks
+        if 'fidelity' in path['expected']:
+            assert path['expected']['fidelity'][0] <= info['fidelity'] <= path['expected']['fidelity'][1], "Fidelity mismatch"
+        print(f"Path OK: Cum Reward {cumulative_reward:.4f}")
+
     print("\n--- Environment Test Complete ---")
     env.close()
 
