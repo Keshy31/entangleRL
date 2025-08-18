@@ -265,7 +265,7 @@ class QuantumPrepEnv(gymnasium.Env):
         reward -= 0.002 * self.current_step
         reward += 0.001 * (current_fidelity - self.last_fidelity)
         
-        if current_fidelity > 0.70:
+        if current_fidelity > 0.75:
             reward += 0.5
        
         self.last_fidelity = current_fidelity
@@ -300,9 +300,26 @@ class QuantumPrepEnv(gymnasium.Env):
             (sy1 * self.current_state).tr().real,
             (sz1 * self.current_state).tr().real
         ], dtype=np.float32)
+    
     def _get_info(self):
         """Returns auxiliary diagnostic information."""
-        return {"fidelity": self.last_fidelity, "steps": self.current_step}
+        current_fidelity = self.last_fidelity  # Already have
+        # Add quantum-specific: Expectation values (partial obs) for analysis
+        obs = self._get_obs()  # Your Pauli <σ> array
+        # Action probs if during eval (but log in trainer; here add state details)
+        return {
+            "fidelity": current_fidelity,
+            "steps": self.current_step,
+            "expectation_sx0": obs[0],  # <σ_x0>
+            "expectation_sy0": obs[1],  # <σ_y0>
+            "expectation_sz0": obs[2],  # <σ_z0>
+            "expectation_sx1": obs[3],  # <σ_x1>
+            "expectation_sy1": obs[4],  # <σ_y1>
+            "expectation_sz1": obs[5],  # <σ_z1>
+            # Optional: Coherence measure (e.g., off-diagonal sum for entanglement hint)
+            "coherence": np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full())))),  # Simple off-diagonal magnitude
+        }
+
     def render(self):
         """Renders the environment for human viewing."""
         if self.render_mode == 'human':
