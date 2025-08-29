@@ -52,7 +52,7 @@ class QuantumPrepEnv(gymnasium.Env):
         self,
         num_qubits=2,
         target_state=None,
-        max_steps=30,
+        max_steps=15,
         render_mode=None,
         gate_time=0.1,
         amplitude_damping_rate=0.0,
@@ -201,7 +201,7 @@ class QuantumPrepEnv(gymnasium.Env):
         # Suppress LinAlgWarning which is expected for singular density matrices (pure states)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", LinAlgWarning)
-            self.last_fidelity = qutip.fidelity(self.current_state, self.target_state)
+            self.last_fidelity = qutip.fidelity(self.current_state, self.target_state) ** 2
        
         observation = self._get_obs()
         info = self._get_info()
@@ -266,42 +266,30 @@ class QuantumPrepEnv(gymnasium.Env):
         self.current_step += 1
        
         # --- Calculate Reward ---
-        # Fidelity bonus
-        fidelity = qutip.fidelity(self.current_state, self.target_state)
-        reward = 1.5 * (fidelity - self.last_fidelity)
-        if (fidelity - self.last_fidelity) > 0:
-            reward += 0.5 * fidelity ** 2
+        # Calculate the fidelity of the NEW state
+        current_fidelity = qutip.fidelity(self.current_state, self.target_state) ** 2
         
-        self.last_fidelity = fidelity
-        
-        if fidelity > 0.75:
-            reward += 0.3
+        # The reward is the IMPROVEMENT from the last step
+        reward = current_fidelity - self.last_fidelity
 
-        # Superposition bonus
-        superpos = np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full()))))  # Your superpos
-        reward += 0.4 * (superpos - self.last_superpos)  # Delta, coefficient for balance (see proportions below)
-        self.last_superpos = superpos  # Store for next step
-
-        # Entanglement bonus
-        ent = concurrence(self.current_state)
-        reward += 0.35 * ent - self.last_ent
-        self.last_ent = ent
-
-        # Step penalty
-        reward -= 0.05 * self.current_step
-       
         # --- Check for Termination ---
         terminated = False
-        if fidelity > 0.95:
-            reward += 1.5  # Bonus for winning
+        if current_fidelity > 0.99: # Use a higher threshold for better performance
+            reward += 1.0  # Add a large bonus for completion
             terminated = True
-        truncated = False
-        if self.current_step >= self.max_steps:
-            truncated = True
-        observation = self._get_obs()
+        
+        truncated = self.current_step >= self.max_steps
 
-        info = self._get_info() if terminated or truncated else {}
-       
+        # Add a small step penalty to encourage efficiency
+        reward -= 0.01
+
+        # --- CRITICAL FIX: Update last_fidelity for the NEXT step ---
+        self.last_fidelity = current_fidelity
+
+        # --- Return values ---
+        observation = self._get_obs()
+        info = self._get_info() # Now this will be called AFTER last_fidelity is updated
+        
         return observation, reward, terminated, truncated, info
     
     def _get_obs(self):
@@ -323,19 +311,19 @@ class QuantumPrepEnv(gymnasium.Env):
     
     def _get_info(self):
         """Returns auxiliary diagnostic information."""
-        current_fidelity = self.last_fidelity  # Already have
-        # Add quantum-specific: Expectation values (partial obs) for analysis
-        obs = self._get_obs()  # Your Pauli <σ> array
-        # Action probs if during eval (but log in trainer; here add state details)
+        obs = self._get_obs()
+        
+        # CRITICAL FIX: Report the up-to-date fidelity.
+        # self.last_fidelity now holds the fidelity of the current state.
         return {
-            "fidelity": current_fidelity,
+            "fidelity": self.last_fidelity, 
             "steps": self.current_step,
-            "expectation_sx0": obs[0],  # <σ_x0>
-            "expectation_sy0": obs[1],  # <σ_y0>
-            "expectation_sz0": obs[2],  # <σ_z0>
-            "expectation_sx1": obs[3],  # <σ_x1>
-            "expectation_sy1": obs[4],  # <σ_y1>
-            "expectation_sz1": obs[5],  # <σ_z1>
+            "expectation_sx0": obs[0],
+            "expectation_sy0": obs[1],
+            "expectation_sz0": obs[2],
+            "expectation_sx1": obs[3],
+            "expectation_sy1": obs[4],
+            "expectation_sz1": obs[5],
             "entanglement": concurrence(self.current_state),
             "superpos": np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full()))))
         }
