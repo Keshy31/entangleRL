@@ -13,46 +13,31 @@ from scipy.linalg import LinAlgWarning
 class QuantumPrepEnv(gymnasium.Env):
     """
     Custom Gymnasium Environment for Quantum State Preparation.
-    The agent's goal is to apply a sequence of quantum gates to transform
-    an initial quantum state (e.g., |00>) to a target state (e.g., a Bell state)
-    with the highest possible fidelity.
-    This environment uses QuTiP to simulate the quantum system.
-    ### Observation Space
-    The observation consists of expectation values for Pauli operators on each qubit,
-    simulating partial observability: ⟨σ_x0⟩, ⟨σ_y0⟩, ⟨σ_z0⟩, ⟨σ_x1⟩, ⟨σ_y1⟩, ⟨σ_z1⟩.
-    - For a 2-qubit system, this is a 6-float array (values between -1 and 1).
-    - Type: spaces.Box(low=-1, high=1, shape=(6,), dtype=np.float32)
-    ### Action Space
-    The agent can choose from a discrete set of quantum gates to apply.
-    This expanded set provides more control, especially over phase, and is
-    better suited for finding efficient solutions and handling noise.
-    - Type: spaces.Discrete(9)
-      - 0: Hadamard gate on Qubit 0
-      - 1: Hadamard gate on Qubit 1
-      - 2: Pauli-X gate on Qubit 0
-      - 3: Pauli-X gate on Qubit 1
-      - 4: Pauli-Z gate on Qubit 0
-      - 5: Pauli-Z gate on Qubit 1
-      - 6: CNOT gate (Control: 0, Target: 1)
-      - 7: CNOT gate (Control: 1, Target: 0)
-      - 8: Identity (No-op)
-    ### Reward
-    The reward is designed to guide the agent towards the target state. It's
-    calculated as the change in fidelity from the previous step.
-    - Reward = (current_fidelity^2) - (previous_fidelity^2)
-    - A bonus reward of +1 is given for achieving a fidelity > 0.99.
-    - A small penalty is applied at each step to encourage shorter solutions.
-    ### Episode End
-    An episode ends when:
-    1. The fidelity to the target state is > 0.99.
-    2. The maximum number of steps (e.g., 50) is reached.
+
+    The agent applies quantum gates to transform |00> into a target state
+    (default: Bell state) with maximum fidelity.
+
+    Observation Space (17 floats, all in [-1, 1]):
+        [0:6]  Single-qubit Pauli expectations: <X0>, <Y0>, <Z0>, <X1>, <Y1>, <Z1>
+        [6:15] Two-qubit correlators: <XX>, <XY>, <XZ>, <YX>, <YY>, <YZ>, <ZX>, <ZY>, <ZZ>
+        [15]   Current fidelity (squared)
+        [16]   Normalized step count (current_step / max_steps)
+
+    Action Space: Discrete(9)
+        0: H on Q0,  1: H on Q1,  2: X on Q0,  3: X on Q1,
+        4: Z on Q0,  5: Z on Q1,  6: CNOT(0->1), 7: CNOT(1->0), 8: Identity
+
+    Reward:
+        current_fidelity^2 - 0.01 step penalty + 5.0 bonus if fidelity > 0.95
+
+    Episode ends when fidelity > 0.95 or max_steps reached.
     """
     metadata = {'render_modes': ['human'], 'render_fps': 4}
     def __init__(
         self,
         num_qubits=2,
         target_state=None,
-        max_steps=15,
+        max_steps=50,
         render_mode=None,
         gate_time=0.1,
         amplitude_damping_rate=0.0,
@@ -61,13 +46,10 @@ class QuantumPrepEnv(gymnasium.Env):
         bit_flip_rate=0.0,
         thermal_occupation=0.0,
         meta_noise=False,
-        seed=None  # Added to handle seed passed by PufferLib
+        seed=None,
     ):
-        """
-        Initializes the quantum environment.
-        """
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(6,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(17,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(9)
        
@@ -106,10 +88,12 @@ class QuantumPrepEnv(gymnasium.Env):
            
         # --- Gate Maps ---
         self._gate_map, self._gate_name_map = self._create_gate_maps()
-        # Initialize state variables
         self.current_state = None
         self.current_step = None
         self.last_fidelity = None
+        self.last_action = None
+
+        self._build_pauli_operators()
         
         warnings.filterwarnings('ignore', category=LinAlgWarning)
 
@@ -193,12 +177,8 @@ class QuantumPrepEnv(gymnasium.Env):
        
         self.current_state = self.initial_state.copy()
         self.current_step = 0
+        self.last_action = None
 
-        self.last_ent = 0
-        self.last_superpos = 0
-
-        # Initial fidelity is calculated against the starting state.
-        # Suppress LinAlgWarning which is expected for singular density matrices (pure states)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", LinAlgWarning)
             self.last_fidelity = qutip.fidelity(self.current_state, self.target_state) ** 2
@@ -210,6 +190,7 @@ class QuantumPrepEnv(gymnasium.Env):
     
     def step(self, action):
         """Executes one time step by applying a quantum gate."""
+        self.last_action = action
        
         # --- Apply Ideal Gate ---
         gate = self._gate_map[action]
@@ -266,25 +247,17 @@ class QuantumPrepEnv(gymnasium.Env):
         self.current_step += 1
        
         # --- Calculate Reward ---
-        # Calculate the fidelity of the NEW state
         current_fidelity = qutip.fidelity(self.current_state, self.target_state) ** 2
-        
-        # The reward is the IMPROVEMENT from the last step
-        reward = current_fidelity - self.last_fidelity
-
-        # --- Check for Termination ---
-        terminated = False
-        if current_fidelity > 0.99: # Use a higher threshold for better performance
-            reward += 1.0  # Add a large bonus for completion
-            terminated = True
-        
-        truncated = self.current_step >= self.max_steps
-
-        # Add a small step penalty to encourage efficiency
-        reward -= 0.01
-
-        # --- CRITICAL FIX: Update last_fidelity for the NEXT step ---
         self.last_fidelity = current_fidelity
+
+        reward = current_fidelity - 0.01
+
+        terminated = False
+        if current_fidelity > 0.95:
+            reward += 5.0
+            terminated = True
+
+        truncated = self.current_step >= self.max_steps
 
         # --- Return values ---
         observation = self._get_obs()
@@ -292,41 +265,55 @@ class QuantumPrepEnv(gymnasium.Env):
         
         return observation, reward, terminated, truncated, info
     
+    def _build_pauli_operators(self):
+        """Pre-compute Pauli operators for observation (avoids per-step allocation)."""
+        sx = qutip.sigmax()
+        sy = qutip.sigmay()
+        sz = qutip.sigmaz()
+        eye = qutip.qeye(2)
+
+        self._single_paulis = [
+            qutip.tensor(sx, eye),  # X0
+            qutip.tensor(sy, eye),  # Y0
+            qutip.tensor(sz, eye),  # Z0
+            qutip.tensor(eye, sx),  # X1
+            qutip.tensor(eye, sy),  # Y1
+            qutip.tensor(eye, sz),  # Z1
+        ]
+
+        paulis = [sx, sy, sz]
+        self._two_qubit_paulis = []
+        for p0 in paulis:
+            for p1 in paulis:
+                self._two_qubit_paulis.append(qutip.tensor(p0, p1))
+
     def _get_obs(self):
-        """Returns partial observations: Pauli expectation values."""
-        sx0 = qutip.tensor(qutip.sigmax(), qutip.qeye(2))
-        sy0 = qutip.tensor(qutip.sigmay(), qutip.qeye(2))
-        sz0 = qutip.tensor(qutip.sigmaz(), qutip.qeye(2))
-        sx1 = qutip.tensor(qutip.qeye(2), qutip.sigmax())
-        sy1 = qutip.tensor(qutip.qeye(2), qutip.sigmay())
-        sz1 = qutip.tensor(qutip.qeye(2), qutip.sigmaz())
-        return np.array([
-            (sx0 * self.current_state).tr().real,
-            (sy0 * self.current_state).tr().real,
-            (sz0 * self.current_state).tr().real,
-            (sx1 * self.current_state).tr().real,
-            (sy1 * self.current_state).tr().real,
-            (sz1 * self.current_state).tr().real
-        ], dtype=np.float32)
+        """Returns 17-dim observation: single-qubit Paulis, two-qubit correlators, fidelity, step."""
+        rho = self.current_state
+        obs = np.empty(17, dtype=np.float32)
+
+        for i, op in enumerate(self._single_paulis):
+            obs[i] = (op * rho).tr().real
+        for i, op in enumerate(self._two_qubit_paulis):
+            obs[6 + i] = (op * rho).tr().real
+
+        obs[15] = np.float32(self.last_fidelity)
+        obs[16] = np.float32(self.current_step / self.max_steps)
+        return obs
     
     def _get_info(self):
         """Returns auxiliary diagnostic information."""
-        obs = self._get_obs()
-        
-        # CRITICAL FIX: Report the up-to-date fidelity.
-        # self.last_fidelity now holds the fidelity of the current state.
-        return {
-            "fidelity": self.last_fidelity, 
+        info = {
+            "fidelity": self.last_fidelity,
             "steps": self.current_step,
-            "expectation_sx0": obs[0],
-            "expectation_sy0": obs[1],
-            "expectation_sz0": obs[2],
-            "expectation_sx1": obs[3],
-            "expectation_sy1": obs[4],
-            "expectation_sz1": obs[5],
             "entanglement": concurrence(self.current_state),
-            "superpos": np.sum(np.abs(self.current_state.full() - np.diag(np.diag(self.current_state.full()))))
         }
+
+        if self.last_action is not None:
+            for i in range(self.action_space.n):
+                info[f"action_{i}_taken"] = 1.0 if self.last_action == i else 0.0
+
+        return info
 
     def render(self):
         """Renders the environment for human viewing."""

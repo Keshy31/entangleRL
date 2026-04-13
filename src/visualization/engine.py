@@ -1,20 +1,25 @@
 import pygame
 from pygame.locals import *
 import torch
-import torch.nn.functional as F  # For softmax
+import torch.nn.functional as F
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from io import BytesIO  # For fig-to-image
-import qutip  # For Bloch spheres
-import pufferlib.models  # For the Default policy class
-import pufferlib.emulation  # For the GymnasiumPufferEnv wrapper
-from src.environment.quantum_env import QuantumPrepEnv  # Your env
+from io import BytesIO
+import qutip
+import pufferlib.models
+import pufferlib.emulation
+from src.environment.quantum_env import QuantumPrepEnv
+
 
 class VisualizationEngine:
-    def __init__(self, model_path='models/ppo_quantum.pth', env_config={}):
-        # Wrap the raw env in GymnasiumPufferEnv for PufferLib compatibility
-        raw_env = QuantumPrepEnv(**env_config)  # e.g., noise rates
+    def __init__(self, model_path='models/mlp_100k_baseline.pth', env_config=None):
+        if env_config is None:
+            env_config = {}
+        raw_env = QuantumPrepEnv(**env_config)
         self.env = pufferlib.emulation.GymnasiumPufferEnv(raw_env)
-        self.policy_net = self.load_model(model_path)  # Load the actual PufferLib policy
+        self.policy_net = self.load_model(model_path)
         pygame.init()
         self.screen = pygame.display.set_mode((800, 600))
         pygame.display.set_caption('Quantum State Prep Demo')
@@ -23,33 +28,35 @@ class VisualizationEngine:
         self.running = True
 
     def load_model(self, path):
-        # Use the exact same policy class as in training
-        # It takes 'env' (extracts obs/action spaces) and hidden_size (matches your training: 64)
         model = pufferlib.models.Default(
-            env=self.env,  # The wrapped env provides single_observation_space etc.
-            hidden_size=64,
+            env=self.env,
+            hidden_size=128,
         )
-        # Load state dict (map to CPU for vis simplicity; change to 'cuda' if needed)
         model.load_state_dict(torch.load(path, map_location='cpu'))
         model.eval()
         return model
 
-    def run_demo(self, episodes=10, replay_mode=False):
+    def run_demo(self, episodes=10):
         for ep in range(episodes):
             obs, _ = self.env.reset()
             done = False
+            print(f"\n--- Episode {ep + 1} ---")
+            step = 0
             while not done and self.running:
                 self.handle_events()
-                # Forward pass: Assumes Default returns (logits, value); take [0] for logits
-                # No RNN, so no state dict needed. If error, try self.policy_net(torch.tensor(obs).unsqueeze(0), {})
                 with torch.no_grad():
-                    logits, value = self.policy_net(torch.tensor(obs).unsqueeze(0))
-                action = torch.argmax(logits, dim=-1).item()  # Argmax for deterministic inference
-                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                    obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                    logits, value = self.policy_net(obs_t)
+                action = torch.argmax(logits, dim=-1).item()
+                obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
-                self.render_frame(logits, info)  # Pass logits (softmax inside render)
-                pygame.time.delay(500)  # Slow for video; adjust for realtime
-            if not self.running: break
+                step += 1
+                gate_name = self.env.env._gate_name_map.get(action, str(action))
+                print(f"  Step {step}: {gate_name:15s}  fid={info['fidelity']:.4f}  rew={reward:+.4f}")
+                self.render_frame(logits, info)
+                pygame.time.delay(500)
+            if not self.running:
+                break
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -57,40 +64,59 @@ class VisualizationEngine:
                 self.running = False
 
     def render_frame(self, logits, info):
-        self.screen.fill((255, 255, 255))  # White BG
-        # Bloch Spheres: Generate Matplotlib fig, convert to surface
+        self.screen.fill((255, 255, 255))
+
         fig = self.generate_bloch_fig()
         buf = BytesIO()
-        fig.savefig(buf, format='png', bbox_inches='tight')
+        fig.savefig(buf, format='png', bbox_inches='tight', dpi=80)
         buf.seek(0)
         bloch_surf = pygame.image.load(buf)
-        self.screen.blit(bloch_surf, (50, 50))  # Position
-        # Policy Bars: Softmax logits to get probabilities, then draw bars
-        probs = F.softmax(logits.squeeze(0), dim=-1).detach().numpy()  # Normalize to probs
-        bar_width = 20
+        self.screen.blit(bloch_surf, (50, 30))
+
+        probs = F.softmax(logits.squeeze(0), dim=-1).detach().numpy()
+        bar_width = 25
+        bar_x_start = 420
+        gate_names = self.env.env._gate_name_map
         for i, prob in enumerate(probs):
-            height = prob * 200  # Scale
-            pygame.draw.rect(self.screen, (0, 0, 255), (400 + i*bar_width, 300 - height, bar_width, height))
-            label = self.font.render(self.env.env._gate_name_map[i][:3], True, (0, 0, 0))  # Abbrev -- Access raw env
-            self.screen.blit(label, (400 + i*bar_width, 310))
-        # Fidelity Meter: Horizontal bar
+            height = int(prob * 200)
+            x = bar_x_start + i * (bar_width + 5)
+            pygame.draw.rect(self.screen, (60, 60, 200), (x, 350 - height, bar_width, height))
+            label = self.font.render(gate_names[i][:3], True, (0, 0, 0))
+            self.screen.blit(label, (x, 355))
+
         fid = info['fidelity']
-        pygame.draw.rect(self.screen, (0, 255, 0) if fid > 0.9 else (255, 0, 0), (50, 400, fid * 300, 20))
-        # Episode Log: Text
-        text = self.font.render(f"Step: {info['steps']} | Fid: {fid:.2f}", True, (0, 0, 0))
-        self.screen.blit(text, (50, 450))
+        bar_y = 420
+        pygame.draw.rect(self.screen, (200, 200, 200), (50, bar_y, 300, 25))
+        color = (30, 180, 30) if fid > 0.9 else (200, 60, 60)
+        pygame.draw.rect(self.screen, color, (50, bar_y, int(fid * 300), 25))
+        fid_label = self.font.render(f"Fidelity: {fid:.3f}", True, (0, 0, 0))
+        self.screen.blit(fid_label, (360, bar_y))
+
+        step_text = self.font.render(f"Step: {info['steps']}", True, (0, 0, 0))
+        self.screen.blit(step_text, (50, 460))
+        ent_text = self.font.render(f"Entanglement: {info['entanglement']:.3f}", True, (0, 0, 0))
+        self.screen.blit(ent_text, (200, 460))
+
         pygame.display.flip()
-        plt.close(fig)  # Clean up
+        plt.close(fig)
 
     def generate_bloch_fig(self):
         fig, ax = plt.subplots(figsize=(4, 4), subplot_kw={'projection': '3d'})
         b = qutip.Bloch(fig=fig, axes=ax)
-        state_q0 = self.env.env.current_state.ptrace(0)  # Access raw env
-        state_q1 = self.env.env.current_state.ptrace(1)  # Access raw env
+        b.vector_color = ['#e74c3c', '#2ecc71']
+        state_q0 = self.env.env.current_state.ptrace(0)
+        state_q1 = self.env.env.current_state.ptrace(1)
         b.add_states([state_q0, state_q1])
         b.make_sphere()
         return fig
 
+    def close(self):
+        pygame.quit()
+
+
 if __name__ == '__main__':
     engine = VisualizationEngine()
-    engine.run_demo()
+    try:
+        engine.run_demo()
+    finally:
+        engine.close()

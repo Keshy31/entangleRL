@@ -1,140 +1,103 @@
-from collections import defaultdict
 import pufferlib
 import pufferlib.vector
 import pufferlib.models
 from pufferlib.pufferl import PuffeRL
 from src.environment.quantum_env import QuantumPrepEnv
 import torch
-from torch.utils.tensorboard import SummaryWriter  # For TensorBoard logging
+from torch.utils.tensorboard import SummaryWriter
 
-## Load the environment and add meta noise
 def env_creator(**kwargs):
-    env = QuantumPrepEnv(
-        meta_noise=False,
-    )
+    env = QuantumPrepEnv(meta_noise=False)
     return pufferlib.emulation.GymnasiumPufferEnv(env, **kwargs)
 
-## Define the training configuration
-# For testing (small values for quick debug iterations)
+# --- Configuration ---
 args = pufferlib.pufferl.load_config('default')
-# Base/Env Setup (unchanged from your suggestion, but confirm env registration)
-args['train']['env'] = 'quantum_prep'  # Matches your Gym env ID
-args['train']['use_rnn'] = True  # Enable RNN for sequences (quantum prep benefits from memory)
-args['train']['seed'] = 42  # For reproducibility
-# Batch and Horizon (Increase for better stats/gradients; your bptt=128 is good, but scale batch up)
-args['train']['batch_size'] = 8192  # Double your 8192; larger batches = longer GPU kernels, better util. Auto-adjusts with bptt.
-args['train']['bptt_horizon'] = 'auto'  # Keep—long enough for quantum sequences (e.g., 5-10 gates to Bell state) without OOM.
-args['train']['minibatch_size'] = 1024  # Double your 256; processes more data per gradient step for stability.
-args['train']['max_minibatch_size'] = 4096  # Double your 1024; cap to avoid VRAM spikes on RTX 4080.
-# Training Hyperparams (Core tweaks here for better learning)
-args['train']['total_timesteps'] = 500000  # 5x your 100k; should take ~30-60 min on GPU. Scale to 1e6+ once stable.
-args['train']['learning_rate'] = 1e-3  # MUCH lower than your 0.015 (1.5e-2 is aggressive and can cause NaNs or no updates). Standard PPO start; decay via scheduler if needed.
-args['train']['update_epochs'] = 8  # Double your 4; more passes over data = extended GPU compute without extra env steps.
-args['train']['gamma'] = 0.995  # Discount—high for long-term fidelity rewards.
-args['train']['gae_lambda'] = 0.95  # For advantages; helps with variance in noisy quantum envs.
-args['train']['clip_coef'] = 0.2  # Standard PPO clip; encourages proximal updates to fix your KL=0.
-args['train']['ent_coef'] = 0.01  # Start higher than default (0.0) to boost exploration, then decay to 0.001 over epochs for exploitation.  # <-- This is initial; will decay in loop
-args['train']['vf_coef'] = 0.6  # Balances value loss; up if explained_variance stays low.
-args['train']['clip_vloss'] = True
-# Vectorization (Scale up for GPU util; your num_envs=32 is ok, but push higher)
-args['vec']['backend'] = 'Multiprocessing'  # Or 'Multiprocessing' if CPU workers help; test for your high CPU issue (more below).
-args['vec']['num_envs'] = 128  # 4x your 32; more parallel sims = faster data collection, better GPU fill. QuantumPrepEnv is lightweight (2 qubits), so this fits.
-args['vec']['num_workers'] = 8  # Double your 8; spreads CPU load (QuTiP sims are CPU-bound by default).
-args['vec']['batch_size'] = 16  # 8x your 4; aligns with num_envs for efficient vec rollouts (masks dones automatically).
-# Logging/Other (For monitoring)
-#args['wandb'] = True  # Or Neptune; logs fidelity/SPS to dashboard for curves.
-#args['wandb_project'] = 'entangleRL'  # Your project name.
 
-## Vectorize the environment
+args['train']['env'] = 'quantum_prep'
+args['train']['use_rnn'] = False
+args['train']['seed'] = 42
+args['train']['batch_size'] = 2048
+args['train']['bptt_horizon'] = 'auto'
+args['train']['minibatch_size'] = 512
+args['train']['max_minibatch_size'] = 2048
+args['train']['total_timesteps'] = 100_000
+args['train']['learning_rate'] = 3e-4
+args['train']['update_epochs'] = 4
+args['train']['gamma'] = 0.99
+args['train']['gae_lambda'] = 0.95
+args['train']['clip_coef'] = 0.2
+args['train']['ent_coef'] = 0.01
+args['train']['vf_coef'] = 0.5
+args['train']['clip_vloss'] = True
+
+args['vec']['backend'] = 'Multiprocessing'
+args['vec']['num_envs'] = 32
+args['vec']['num_workers'] = 4
+args['vec']['batch_size'] = 8
+
+# --- Vectorized Environment ---
 vecenv = pufferlib.vector.make(
     env_creator,
-    backend='Multiprocessing',
+    backend=args['vec']['backend'],
     num_workers=args['vec']['num_workers'],
     num_envs=args['vec']['num_envs'],
     batch_size=args['vec']['batch_size'],
 )
 
-## Define the policy with LSTM wrapper
-base_policy = pufferlib.models.Default(
+# --- Policy (MLP only -- no LSTM until environment learnability is proven) ---
+policy = pufferlib.models.Default(
     env=vecenv,
-    hidden_size=128,  # Increased from 64 for better encoding before LSTM
-).cuda()
-policy = pufferlib.models.LSTMWrapper(
-    env=vecenv,
-    policy=base_policy,
-    input_size=base_policy.hidden_size,  # Matches encoder output
-    hidden_size=128,  # Larger for LSTM capacity (adjust down if OOM)
+    hidden_size=128,
 ).cuda()
 
-## Set up the trainer
+# --- Trainer ---
 trainer = PuffeRL(args['train'], vecenv, policy)
 
-# Initialize TensorBoard writer
-writer = SummaryWriter(log_dir='logs/tensorboard/quantum_prep_rnn_500k_no_noise_1e-3_8192_8_42_0.995')  # Create a log dir; run tensorboard --logdir=logs/tensorboard to view
-
-# Extract total_timesteps for decay calculation (outside loop for efficiency)
+writer = SummaryWriter(log_dir='logs/tensorboard/mlp_100k_baseline')
 total_timesteps = args['train']['total_timesteps']
 
-# Main training loop: Alternate evaluate (collect data) and train (update policy)
-while trainer.global_step < total_timesteps:  # Use variable for brevity
-    trainer.evaluate()  # Fill buffers with rollouts; this increments global_step
+while trainer.global_step < total_timesteps:
+    trainer.evaluate()
 
-    # Update ent_coef with linear decay (after evaluate, before train)
-    progress_ratio = trainer.global_step / total_timesteps
-    trainer.config['ent_coef'] = max(0.002, 0.01 * (1 - progress_ratio))  # Clamp to >=0
+    progress = trainer.global_step / total_timesteps
+    trainer.config['ent_coef'] = max(0.005, 0.01 * (1 - progress))
 
-    stats_logs = trainer.mean_and_log()  # Compute and log stats means (fidelity, steps) after evaluate
-    trainer.train()  # Compute advantages/losses and update; no return, but sets trainer.losses
-    
-    # Log key metrics to TensorBoard
-    step = trainer.global_step  # Use global_step as the x-axis
-    # Losses from trainer.losses (always set after train())
-    if 'entropy' in trainer.losses:
-        writer.add_scalar('Loss/Entropy', trainer.losses['entropy'], step)
-    if 'value_loss' in trainer.losses:
-        writer.add_scalar('Loss/Value', trainer.losses['value_loss'], step)
-    if 'policy_loss' in trainer.losses:
-        writer.add_scalar('Loss/Policy', trainer.losses['policy_loss'], step)
-    if 'clipfrac' in trainer.losses:
-        writer.add_scalar('Loss/Clipfrac', trainer.losses['clipfrac'], step)
-    if 'approx_kl' in trainer.losses:
-        writer.add_scalar('Loss/Approx_KL', trainer.losses['approx_kl'], step)
-    if 'explained_variance' in trainer.losses:
-        writer.add_scalar('Loss/Explained_Variance', trainer.losses['explained_variance'], step)
-    writer.add_scalar('Performance/SPS', stats_logs['SPS'], step)
-    # Custom env stats from mean_and_log() return
-    if 'environment/fidelity' in stats_logs:  # Now from stats_logs
-        writer.add_scalar('Env/Fidelity', stats_logs['environment/fidelity'], step)
-    if 'environment/steps' in stats_logs:  # From env _get_info(); average episode length
-        writer.add_scalar('Env/Episode_Length', stats_logs['environment/steps'], step)
-    # Add from stats_logs (env info means)
-    if 'environment/expectation_sx0' in stats_logs:
-        writer.add_scalar('Env/Expectation_SX0', stats_logs['environment/expectation_sx0'], step)
-    if 'environment/expectation_sy0' in stats_logs:
-        writer.add_scalar('Env/Expectation_SY0', stats_logs['environment/expectation_sy0'], step)
-    if 'environment/expectation_sz0' in stats_logs:
-        writer.add_scalar('Env/Expectation_SZ0', stats_logs['environment/expectation_sz0'], step)
-    if 'environment/expectation_sx1' in stats_logs:
-        writer.add_scalar('Env/Expectation_SX1', stats_logs['environment/expectation_sx1'], step)
-    if 'environment/expectation_sy1' in stats_logs:
-        writer.add_scalar('Env/Expectation_SY1', stats_logs['environment/expectation_sy1'], step)
-    if 'environment/expectation_sz1' in stats_logs:
-        writer.add_scalar('Env/Expectation_SZ1', stats_logs['environment/expectation_sz1'], step)
-    if 'environment/superpos' in stats_logs:
-        writer.add_scalar('Env/Superpos', stats_logs['environment/superpos'], step)
-    if 'environment/entanglement' in stats_logs:
-        writer.add_scalar('Env/Entanglement', stats_logs['environment/entanglement'], step)
+    # train() calls mean_and_log() internally and returns the combined logs
+    # (env stats under 'environment/*', losses under 'losses/*', etc.)
+    # It returns None on non-logging steps.
+    logs = trainer.train()
 
-    # Optional: Log the current ent_coef for monitoring decay
+    if logs is None:
+        continue
+
+    step = trainer.global_step
+
+    # Loss metrics (populated by train -> mean_and_log -> self.losses)
+    for key in ('policy_loss', 'value_loss', 'entropy', 'approx_kl',
+                'clipfrac', 'explained_variance'):
+        full_key = f'losses/{key}'
+        if full_key in logs:
+            writer.add_scalar(f'Loss/{key}', logs[full_key], step)
+
+    if 'SPS' in logs:
+        writer.add_scalar('Performance/SPS', logs['SPS'], step)
+
+    # Environment info metrics
+    if 'environment/fidelity' in logs:
+        writer.add_scalar('Env/Fidelity', logs['environment/fidelity'], step)
+    if 'environment/steps' in logs:
+        writer.add_scalar('Env/Episode_Length', logs['environment/steps'], step)
+    if 'environment/entanglement' in logs:
+        writer.add_scalar('Env/Entanglement', logs['environment/entanglement'], step)
+
+    for i in range(9):
+        action_key = f'environment/action_{i}_taken'
+        if action_key in logs:
+            writer.add_scalar(f'Actions/Action_{i}', logs[action_key], step)
+
     writer.add_scalar('Hyperparams/Ent_Coef', trainer.config['ent_coef'], step)
 
-## Save the policy
-torch.save(trainer.policy.state_dict(), 'models/ppo_quantum_rnn_500k_no_noise_1e-3_8192_8_42_0.995.pth')
-
-## Print the dashboard (keep for console reference)
-trainer.print_dashboard()
-
-## Close the environment and TensorBoard writer
+torch.save(trainer.policy.state_dict(), 'models/mlp_100k_baseline.pth')
 trainer.close()
 vecenv.close()
 writer.close()

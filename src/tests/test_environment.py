@@ -1,93 +1,108 @@
-import sys
-import os
-import gymnasium
-from src.environment import QuantumPrepEnv
-import numpy as np
-import json
-def main():
-    """
-    Tests the QuantumPrepEnv to ensure it's working correctly.
-    
-    This script will:
-    1. Create an instance of the environment.
-    2. Reset it to get the initial state.
-    3. Take a few random actions and print the results.
-    """
-    print("--- Testing Quantum State Preparation Environment ---")
-    
-    # Create the environment with a non-zero noise level
-    env = QuantumPrepEnv(render_mode='human')
-    
-    # Print the gate map for clarity
-    print("\n--- Action Space Gate Map ---")
-    print(json.dumps(env._gate_name_map, indent=2))
-    print("-----------------------------\n")
-    # Reset the environment and get the initial observation
-    obs, info = env.reset()
-    print(f"Initial Observation Shape: {obs.shape}")
-    print(f"Initial Info: {info}")
-    print("Initial State Vector:")
-    print(env.current_state)
-    env.render()
-    
-    # --- Take Specific Steps to Create Bell State ---
-    print("\n--- Running Deterministic Test in Noisy Environment ---")
-    actions_to_test = [
-        (0, "Hadamard Q0"),
-        (6, "CNOT (0->1)")
-    ]
-    
-    for i, (action, action_name) in enumerate(actions_to_test):
-        print(f"\n--- Step {i+1}/{len(actions_to_test)}, Action: {action} ({action_name}) ---")
-       
-        # Apply the action
-        obs, reward, terminated, truncated, info = env.step(action)
-       
-        # Print the results
-        print(f"Observation Shape: {obs.shape}")
-        print(f"Reward: {reward:.4f}")
-        print(f"Info: {info}")
-        print(f"Terminated: {terminated}, Truncated: {truncated}")
-        print("Current State Vector:")
-        print(env.current_state)
-        env.render()
-       
-        if terminated or truncated:
-            print("\nEpisode finished.")
-            break
-    # Add to main():
-    paths_to_test = [
-        # Optimal: H0 + CNOT0->1 (your current)
-        {"name": "Optimal Bell", "actions": [0, 6], "expected": {"fidelity": (0.99, 1.01), "ent": (0.99, 1.01)}},
-       
-        # Suboptimal: Extra gates (H0 + X1 + CNOT0->1) – should reach ~1 but longer, test penalty
-        {"name": "Suboptimal with Flip", "actions": [0, 3, 6], "expected": {"fidelity": (0, 1.01), "steps": 3}},
-       
-        # Cycle: X0 + X0 (back to start) – test delta~0, penalty for waste
-        {"name": "Cycle Waste", "actions": [2, 2], "expected": {"fidelity": (0.7, 0.71), "reward_delta": "~0"}},
-       
-        # Phase Test: H0 + Z0 + CNOT – should make Bell variant (phase diff), fidelity~1 if target allows phases
-        {"name": "Phase Variant", "actions": [0, 4, 6], "expected": {"fidelity": (0.0, 1.1)}},
-       
-        # Random-Like (Agent Early): Identity x3 – test penalty accumulation
-        {"name": "No-Op Stall", "actions": [8, 8, 8], "expected": {"steps": 3, "reward": "<0"}},
-       
-        # Failure: Only CNOT without superpos – no change, low fidelity
-        {"name": "No Superpos CNOT", "actions": [6], "expected": {"fidelity": (0.5, 0.8)}},
+"""
+Sanity-check script for QuantumPrepEnv.
 
-        # Probe and Prepare: Identity, Hadamard, Identity, CNOT
-        {"name": "Probe and Prepare", "actions": [8, 0, 8, 6], "expected": {"fidelity": (0.99, 1.01), "steps": 4}},
-    ]
-    for path in paths_to_test:
-        print(f"\n--- Testing Path: {path['name']} ---")
-        env.reset()
-        cumulative_reward = 0
-        for action in path['actions']:
-            obs, reward, term, trunc, info = env.step(action)
-            cumulative_reward += reward
-            print(f"Action {action}: Reward {reward:.4f}, Fidelity {info['fidelity']:.4f}, Ent {info['entanglement']:.4f}, Superpos {info['superpos']:.4f}")
-        print(f"Path OK: Cumulative Reward {cumulative_reward:.4f}")
-    print("\n--- Environment Test Complete ---")
+Runs deterministic gate sequences and verifies that the environment
+produces the expected fidelity and reward values. This validates that
+the observation space, reward function, and termination logic work
+correctly before any training is attempted.
+"""
+from src.environment.quantum_env import QuantumPrepEnv
+import numpy as np
+
+
+def run_path(env, name, actions, expect_fidelity_min=None, expect_terminated=None):
+    obs, info = env.reset()
+    cumulative_reward = 0.0
+    terminated = False
+
+    print(f"\n--- {name} ---")
+    print(f"  Initial obs shape: {obs.shape}  (expect 17)")
+    print(f"  Initial fidelity:  {info['fidelity']:.4f}")
+
+    for i, action in enumerate(actions):
+        obs, reward, terminated, truncated, info = env.step(action)
+        cumulative_reward += reward
+        gate = env._gate_name_map[action]
+        print(f"  Step {i+1}: {gate:15s}  fid={info['fidelity']:.4f}  "
+              f"rew={reward:+.4f}  term={terminated}")
+
+        if terminated or truncated:
+            break
+
+    print(f"  Cumulative reward: {cumulative_reward:+.4f}")
+    print(f"  Final fidelity:    {info['fidelity']:.4f}")
+    print(f"  Final entanglement:{info['entanglement']:.4f}")
+
+    if expect_fidelity_min is not None:
+        assert info['fidelity'] >= expect_fidelity_min, (
+            f"Expected fidelity >= {expect_fidelity_min}, got {info['fidelity']:.4f}")
+    if expect_terminated is not None:
+        assert terminated == expect_terminated, (
+            f"Expected terminated={expect_terminated}, got {terminated}")
+
+    return info, cumulative_reward
+
+
+def main():
+    env = QuantumPrepEnv()
+
+    print("=== QuantumPrepEnv Sanity Check ===")
+    print(f"Observation space: {env.observation_space}")
+    print(f"Action space:      {env.action_space}")
+    print(f"Max steps:         {env.max_steps}")
+
+    # 1. Optimal Bell state: H(Q0) + CNOT(0->1) -> fidelity ~1.0, should terminate
+    run_path(env, "Optimal Bell (H0 + CNOT01)",
+             actions=[0, 6],
+             expect_fidelity_min=0.95,
+             expect_terminated=True)
+
+    # 2. No-ops only -- should NOT terminate, low fidelity
+    run_path(env, "Identity x5 (no progress)",
+             actions=[8, 8, 8, 8, 8],
+             expect_terminated=False)
+
+    # 3. Cancelling moves: X0 then X0 again (back to start)
+    run_path(env, "X0 + X0 (cancel out)",
+             actions=[2, 2],
+             expect_terminated=False)
+
+    # 4. Verify observation contains two-qubit correlators
+    obs, _ = env.reset()
+    assert obs.shape == (17,), f"Obs shape should be (17,), got {obs.shape}"
+    # For |00>: <ZZ> should be +1, <XX>=<YY>=0
+    zz_idx = 6 + 8  # ZZ is the last correlator (index 14 in obs)
+    print(f"\n--- Observation structure check (|00> state) ---")
+    print(f"  <Z0>={obs[2]:.3f} (expect +1)")
+    print(f"  <Z1>={obs[5]:.3f} (expect +1)")
+    print(f"  <ZZ>={obs[zz_idx]:.3f} (expect +1)")
+    print(f"  <XX>={obs[6]:.3f} (expect 0)")
+    print(f"  Fidelity in obs={obs[15]:.3f}")
+    print(f"  Step/max in obs={obs[16]:.3f} (expect 0)")
+
+    # After H0 + CNOT -> Bell state: <XX>=+1, <YY>=-1, <ZZ>=+1
+    obs, _ = env.reset()
+    obs, _, _, _, info = env.step(0)  # H0
+    obs, _, _, _, info = env.step(6)  # CNOT01
+    print(f"\n--- Observation structure check (Bell state) ---")
+    print(f"  <X0>={obs[0]:.3f} (expect 0)")
+    print(f"  <Z0>={obs[2]:.3f} (expect 0)")
+    print(f"  <XX>={obs[6]:.3f} (expect +1)")
+    xy_idx = 6 + 1  # XY
+    yy_idx = 6 + 4  # YY
+    print(f"  <XY>={obs[xy_idx]:.3f} (expect 0)")
+    print(f"  <YY>={obs[yy_idx]:.3f} (expect -1)")
+    print(f"  <ZZ>={obs[zz_idx]:.3f} (expect +1)")
+    print(f"  Fidelity in obs={obs[15]:.3f} (expect ~1)")
+
+    # 5. Verify cumulative reward is positive for optimal path
+    info, cum_reward = run_path(env, "Reward check: optimal path should be highly positive",
+                                 actions=[0, 6])
+    assert cum_reward > 4.0, f"Expected cumulative reward > 4.0 for optimal path, got {cum_reward:.4f}"
+
+    print("\n=== ALL SANITY CHECKS PASSED ===")
     env.close()
+
+
 if __name__ == "__main__":
     main()

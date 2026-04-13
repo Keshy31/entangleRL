@@ -7,7 +7,7 @@ scipy>=1.10.0                   # Scientific computing
 # Reinforcement Learning  
 gymnasium>=0.29.0               # RL environment interface
 torch>=2.0.0                    # Deep learning framework
-pufferlib>=0.5.0               # High-performance RL training
+pufferlib>=3.0.0,<4.0.0        # High-performance RL training (v3 API)
 
 # Visualization and UI
 pygame>=2.5.0                   # Game engine for interactive demos
