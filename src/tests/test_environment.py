@@ -100,8 +100,73 @@ def main():
                                  actions=[0, 6])
     assert cum_reward > 4.0, f"Expected cumulative reward > 4.0 for optimal path, got {cum_reward:.4f}"
 
-    print("\n=== ALL SANITY CHECKS PASSED ===")
+    # 6. Verify new info fields exist
+    assert "max_fidelity" in info, "Missing 'max_fidelity' in info"
+    assert "completed" in info, "Missing 'completed' in info"
+    assert "episode_return" in info, "Missing 'episode_return' in info"
+    assert info["completed"] == 1.0, f"Expected completed=1.0 for optimal path, got {info['completed']}"
+    print(f"\n--- New info fields check ---")
+    print(f"  max_fidelity:  {info['max_fidelity']:.4f}")
+    print(f"  completed:     {info['completed']}")
+    print(f"  episode_return:{info['episode_return']:+.4f}")
+
+    # 7. Configurable completion_threshold
+    env_strict = QuantumPrepEnv(completion_threshold=0.999)
+    obs, _ = env_strict.reset()
+    obs, _, terminated, _, _ = env_strict.step(0)  # H0
+    obs, _, terminated, _, info = env_strict.step(6)  # CNOT01 -> F~1.0
+    assert terminated, "Expected termination at threshold=0.999 for perfect Bell state"
+    env_strict.close()
+
+    env_low = QuantumPrepEnv(completion_threshold=0.40)
+    obs, _ = env_low.reset()
+    # Initial F=0.5 > 0.40, so first action that doesn't lower fidelity should terminate
+    # Actually, completion is checked after step, and initial F=0.5 > 0.40.
+    # The identity gate keeps F at 0.5, which is > 0.40, so it should terminate.
+    obs, _, terminated, _, _ = env_low.step(8)  # Identity -> F stays at 0.5
+    assert terminated, "Expected termination at threshold=0.40 when F=0.5"
+    env_low.close()
+    print(f"  completion_threshold override: OK")
+
     env.close()
+
+    # 8. Noisy environment: noise degrades fidelity below 1.0
+    print(f"\n--- Noisy environment check ---")
+    noisy_env = QuantumPrepEnv(
+        amplitude_damping_rate=0.05,
+        dephasing_rate=0.02,
+        depolarizing_rate=0.01,
+        gate_time=0.1,
+        completion_threshold=1.0,  # prevent early termination
+    )
+    obs, info = noisy_env.reset()
+    print(f"  Initial fidelity (noisy): {info['fidelity']:.4f} (expect 0.5, no noise at reset)")
+
+    obs, _, _, _, info = noisy_env.step(0)  # H0
+    fid_after_h = info['fidelity']
+    print(f"  After H(Q0): fid={fid_after_h:.4f}")
+
+    obs, _, _, _, info = noisy_env.step(6)  # CNOT01
+    fid_after_cnot = info['fidelity']
+    print(f"  After CNOT:  fid={fid_after_cnot:.4f}")
+
+    assert fid_after_cnot < 1.0, (
+        f"Expected fidelity < 1.0 under noise, got {fid_after_cnot:.4f}")
+    assert fid_after_cnot > 0.5, (
+        f"Expected fidelity > 0.5 (noise shouldn't destroy the circuit), got {fid_after_cnot:.4f}")
+    print(f"  Noise degradation: {1.0 - fid_after_cnot:.4f} (fidelity loss from ideal)")
+
+    # Verify fidelity decays further with idle steps under noise
+    obs, _, _, _, info_idle = noisy_env.step(8)  # Identity (idle under noise)
+    fid_idle = info_idle['fidelity']
+    print(f"  After idle:  fid={fid_idle:.4f} (expect further decay)")
+    assert fid_idle <= fid_after_cnot + 1e-6, (
+        f"Fidelity should not increase under noise with identity gate")
+
+    noisy_env.close()
+    print(f"  Noisy environment: OK")
+
+    print("\n=== ALL SANITY CHECKS PASSED ===")
 
 
 if __name__ == "__main__":

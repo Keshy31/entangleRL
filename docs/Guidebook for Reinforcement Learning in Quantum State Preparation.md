@@ -10,7 +10,7 @@ tags:
 
 This manual consolidates the concepts, explanations, analogies, and project-specific details for the "Reinforcement Learning for Quantum State Preparation in a Simulated Quantum System" project. It serves as a self-contained primer, playbook, and reference guide.
 
-The project: Using RL (PPO via PufferLib 3.0) to prepare quantum states (e.g., Bell state) in a simulated environment (QuTiP wrapped in Gymnasium), with Pygame for visualization. No physical hardware needed; everything runs in Python on GPU. Training requires Linux or WSL due to PufferLib's multiprocessing backend.
+The project: Using RL (PPO via PufferLib 3.0) to prepare quantum states (e.g., Bell state) in a simulated environment (QuTiP wrapped in Gymnasium), with Pygame for visualization. No physical quantum hardware needed; everything runs in Python on GPU. Training requires Linux or WSL because PufferLib's multiprocessing backend uses `fork()`, which is unavailable on native Windows. See the [README prerequisites](../README.md#prerequisites) for WSL and virtual environment setup.
 
 ## 1. Quantum Computing Fundamentals
 
@@ -79,39 +79,71 @@ RL is decision-making via trial-and-error, with an agent learning to maximize cu
 ### 3.1 Environment Design
 QuantumPrepEnv is the core Gymnasium environment:
 - **Observation**: 17 floats -- single-qubit Paulis, two-qubit correlators (essential for seeing entanglement), fidelity, and step progress.
-- **Reward**: `fidelity^2 - 0.01` per step + 5.0 bonus at fidelity > 0.95.
-- **Noise**: Configurable channels via QuTiP's mesolve; meta-noise mode randomizes rates per episode.
+- **Reward (Moving-Goalpost)**: Only rewards new fidelity records per episode (`F_t - F_max` if improving, -0.01 otherwise), plus +5.0 completion bonus when fidelity exceeds `completion_threshold` (configurable, default 0.95). This prevents the lazy-agent trap caused by non-monotonic fidelity landscapes.
+- **Action Masking**: All gates are self-inverse, so repeating the previous action is blocked (equivalent to undoing it). Enforced directly in `step()`.
+- **Noise**: Configurable amplitude damping, dephasing, depolarizing, bit-flip, and thermal channels via QuTiP's mesolve. Meta-noise mode randomizes all rates per episode for domain randomization.
+- **Completion threshold**: Configurable per experiment. Set lower under noise to ensure the bonus is reachable (e.g., 0.93 for fixed noise, 0.80 for meta-noise).
 - **Why two-qubit correlators matter**: The Bell state has <X0>=<Y0>=<Z0>=<X1>=<Y1>=<Z1>=0, identical to a maximally mixed (random) state. Only two-qubit correlators (<XX>=+1, <YY>=-1, <ZZ>=+1) distinguish it.
 
 ### 3.2 Training System
+- **Configurable experiment runner** (`src/training/train.py`): driven by named presets or CLI args. Supports `--experiment noiseless_mgr|fixed_noise|meta_noise` with full override capability for all env and training parameters.
 - PufferLib 3.0 with PuffeRL class. Wraps QuantumPrepEnv via GymnasiumPufferEnv.
-- MLP policy (pufferlib.models.Default, hidden_size=128). LSTM available for future use.
+- MLP policy (pufferlib.models.Default, hidden_size=128).
 - 32 parallel environments, 4 multiprocessing workers.
-- Entropy coefficient linearly decayed from 0.01 to 0.005 over training.
+- Adam optimizer (PufferLib's default Muon fails on small networks).
+- Entropy coefficient 0.05 (constant, high floor prevents premature collapse).
+- **Logging**: TensorBoard with dynamic environment metric discovery, hparams plugin for cross-experiment comparison, console progress output every ~10 seconds.
+- **Checkpointing**: periodic model saves (every 25K steps) with full config JSON alongside the weights.
 
-### 3.3 Visualization and Inference
+### 3.3 Tools
+- **Noise analysis** (`python -m src.tools.noise_analysis`): computes the fidelity ceiling under specified noise rates by running the optimal gate sequence. Reports achievable fidelity, depth scan for compensating sequences, and recommended completion threshold. Run this before any noisy training experiment.
+
+### 3.4 Visualization and Inference
 - Pygame engine loads trained MLP policy (matching hidden_size=128).
 - Renders Bloch spheres (QuTiP/Matplotlib), gate probability bars, fidelity meter.
 - AI-only mode: argmax actions for deterministic inference.
 
-### 3.4 Workflow
-1. Install dependencies (Linux/WSL): `pip install -r requirements.txt && pip install -e .`
+### 3.5 Workflow
+
+**Platform requirement**: PufferLib's multiprocessing backend requires the `fork` start method (Linux/macOS only). Windows users must run everything inside WSL (Windows Subsystem for Linux) -- see the [README](../README.md#prerequisites) for setup steps.
+
+1. Create a virtual environment and install dependencies:
+   ```bash
+   python3 -m venv .entangleRL-env
+   source .entangleRL-env/bin/activate
+   pip install -r requirements.txt && pip install -e .
+   ```
+   Re-activate with `source .entangleRL-env/bin/activate` each time you open a new terminal.
 2. Sanity check: `python -m src.tests.test_environment`
-3. Train: `python -m src.training.train`
-4. Monitor: `tensorboard --logdir=logs/tensorboard`
-5. Visualize: `python -m src.visualization.engine`
-6. Iterate: adjust hyperparameters, add noise, scale up timesteps.
+3. Analyze noise ceiling (if running noisy experiment): `python -m src.tools.noise_analysis`
+4. Train: `python -m src.training.train --experiment fixed_noise` (or any preset / custom args)
+5. Monitor: `tensorboard --logdir=logs/tensorboard`
+6. Visualize: `python -m src.visualization.engine` (WSL users need WSLg or an X server for the Pygame display)
 
-### 3.5 Educational Value
-- Bloch sphere animations show how gates transform qubit states.
-- Two-qubit correlators demonstrate why entanglement requires joint measurements.
-- The progression from random exploration to optimal policy illustrates RL fundamentals.
+### 3.6 Results Summary (as of Runs 1-5)
 
-### 3.6 Future Extensions
-- More qubits (GHZ states with 3-4 qubits).
-- Continuous rotation gates (Rx, Ry, Rz).
-- Meta-RL for noise adaptation.
-- Qiskit integration for hybrid sim/real quantum backends.
-- Multi-agent cooperative preparation.
+| Run | Key Change | Outcome |
+|---|---|---|
+| 1. Muon baseline | Default optimizer | No learning (Muon fails on 3.6K params) |
+| 2. Adam + absolute reward | Fixed optimizer | Lazy agent (Identity 99.5%) |
+| 3. MGR + masking | Reward + exploration fix | **Optimal circuit discovered** (F=1.0 in 2 steps) |
+| 4. Fixed noise | NISQ-realistic noise | Same circuit, F=0.983 (noise ceiling) |
+| 5. Meta-noise | Domain randomization | Same circuit, robust across all noise regimes |
+
+Key insight: MGR + action masking solves non-monotonic fidelity landscapes. The architecture is noise-robust and generalizes across noise distributions without observing the noise parameters.
+
+### 3.7 Research Roadmap
+
+**Phase 2 (next): Multi-target generalization**
+- Train a single conditional policy across all 4 Bell states
+- Requires adding target state info to the observation (17-dim → 32-dim)
+- Tests whether the architecture produces a general circuit compiler, not a memorized solution
+
+**Phase 3 (future): Hardware relevance**
+- Hardware-native gate sets (IBM SX/Rz/CX, Google √iSWAP/CZ, IonQ Rxx)
+- 3-qubit GHZ state scaling
+- Transpiler benchmarking (RL agent vs Qiskit optimization_level=3)
+
+See [EXPERIMENTS.md](../EXPERIMENTS.md) for detailed experiment specs and results.
 
 This manual is comprehensive -- refer back for details as you build and extend the project.

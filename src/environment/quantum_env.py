@@ -27,10 +27,17 @@ class QuantumPrepEnv(gymnasium.Env):
         0: H on Q0,  1: H on Q1,  2: X on Q0,  3: X on Q1,
         4: Z on Q0,  5: Z on Q1,  6: CNOT(0->1), 7: CNOT(1->0), 8: Identity
 
-    Reward:
-        current_fidelity^2 - 0.01 step penalty + 5.0 bonus if fidelity > 0.95
+    Reward (Moving-Goalpost + Completion Bonus):
+        If F_t > F_max:  reward = F_t - F_max, then F_max = F_t
+        Else:            reward = -0.01  (step penalty)
+        If F_t > completion_threshold: reward += 5.0 (completion bonus, episode terminates)
 
-    Episode ends when fidelity > 0.95 or max_steps reached.
+    Dynamic Action Masking:
+        All gates in the action set are self-inverse (H²=X²=Z²=CNOT²=I²=I).
+        The immediately preceding action is masked to prevent the agent from
+        undoing its last gate or stalling with repeated Identity.
+
+    Episode ends when fidelity > completion_threshold (default 0.95) or max_steps reached.
     """
     metadata = {'render_modes': ['human'], 'render_fps': 4}
     def __init__(
@@ -46,6 +53,7 @@ class QuantumPrepEnv(gymnasium.Env):
         bit_flip_rate=0.0,
         thermal_occupation=0.0,
         meta_noise=False,
+        completion_threshold=0.95,
         seed=None,
     ):
         self.observation_space = spaces.Box(
@@ -70,6 +78,7 @@ class QuantumPrepEnv(gymnasium.Env):
         self.bit_flip_rate = bit_flip_rate
         self.thermal_occupation = thermal_occupation  # n_th >=0; if >0, adds excitation to amplitude damping
         self.meta_noise = meta_noise
+        self.completion_threshold = completion_threshold
        
         # --- Define Quantum States (as Density Matrices) ---
         # The initial state is |0...0> for the given number of qubits.
@@ -91,7 +100,9 @@ class QuantumPrepEnv(gymnasium.Env):
         self.current_state = None
         self.current_step = None
         self.last_fidelity = None
+        self.max_fidelity = None
         self.last_action = None
+        self.episode_return = 0.0
 
         self._build_pauli_operators()
         
@@ -178,10 +189,13 @@ class QuantumPrepEnv(gymnasium.Env):
         self.current_state = self.initial_state.copy()
         self.current_step = 0
         self.last_action = None
+        self.episode_return = 0.0
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", LinAlgWarning)
             self.last_fidelity = qutip.fidelity(self.current_state, self.target_state) ** 2
+
+        self.max_fidelity = self.last_fidelity
        
         observation = self._get_obs()
         info = self._get_info()
@@ -189,13 +203,19 @@ class QuantumPrepEnv(gymnasium.Env):
         return observation, info
     
     def step(self, action):
-        """Executes one time step by applying a quantum gate."""
+        """Executes one time step by applying a quantum gate.
+
+        Dynamic action masking: all gates in the action set are self-inverse,
+        so repeating the previous action would undo it (equivalent to Identity).
+        We enforce this by skipping the gate application when the agent repeats
+        its last action, counting it as a wasted step.
+        """
+        apply_gate = (action != self.last_action)
         self.last_action = action
-       
-        # --- Apply Ideal Gate ---
-        gate = self._gate_map[action]
-        # Unitary evolution on a density matrix: ρ' = UρU†
-        self.current_state = gate * self.current_state * gate.dag()
+
+        if apply_gate:
+            gate = self._gate_map[action]
+            self.current_state = gate * self.current_state * gate.dag()
         # --- Apply Noise using mesolve ---
         c_ops = []
        
@@ -246,22 +266,27 @@ class QuantumPrepEnv(gymnasium.Env):
             self.current_state = result.states[-1]
         self.current_step += 1
        
-        # --- Calculate Reward ---
+        # --- Moving-Goalpost Reward (MGR) ---
         current_fidelity = qutip.fidelity(self.current_state, self.target_state) ** 2
         self.last_fidelity = current_fidelity
 
-        reward = current_fidelity - 0.01
+        if current_fidelity > self.max_fidelity:
+            reward = current_fidelity - self.max_fidelity
+            self.max_fidelity = current_fidelity
+        else:
+            reward = -0.01
 
         terminated = False
-        if current_fidelity > 0.95:
+        if current_fidelity > self.completion_threshold:
             reward += 5.0
             terminated = True
 
+        self.episode_return += reward
         truncated = self.current_step >= self.max_steps
 
         # --- Return values ---
         observation = self._get_obs()
-        info = self._get_info() # Now this will be called AFTER last_fidelity is updated
+        info = self._get_info(terminated=terminated)
         
         return observation, reward, terminated, truncated, info
     
@@ -301,17 +326,25 @@ class QuantumPrepEnv(gymnasium.Env):
         obs[16] = np.float32(self.current_step / self.max_steps)
         return obs
     
-    def _get_info(self):
-        """Returns auxiliary diagnostic information."""
+    def _get_info(self, terminated=False):
+        """Returns auxiliary diagnostic information and dynamic action mask."""
         info = {
             "fidelity": self.last_fidelity,
+            "max_fidelity": self.max_fidelity,
             "steps": self.current_step,
             "entanglement": concurrence(self.current_state),
+            "episode_return": self.episode_return,
+            "completed": 1.0 if terminated else 0.0,
         }
 
         if self.last_action is not None:
             for i in range(self.action_space.n):
                 info[f"action_{i}_taken"] = 1.0 if self.last_action == i else 0.0
+
+        mask = np.ones(self.action_space.n, dtype=bool)
+        if self.last_action is not None:
+            mask[self.last_action] = False
+        info["action_mask"] = mask
 
         return info
 
