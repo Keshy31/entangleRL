@@ -236,11 +236,128 @@ Action distribution at convergence: H(Q0)=50.2%, CNOT(0→1)=49.8%, all others=0
 
 ---
 
+### Run 3b: `noiseless_mgr` (Re-run with Dense Checkpoints)
+
+**Date**: 2026-06-09
+**Goal**: Reproduce Run 3 with `checkpoint_interval=5000` to capture mid-training policy snapshots for the demo video. Also the first run with end-of-episode metrics.
+
+Config identical to Run 3 (MGR + masking, noiseless, 100K steps, seed 42). Training took ~5 minutes; 16 checkpoints saved at ~6K-step intervals under `models/noiseless_mgr/`.
+
+#### End-of-episode metrics (new)
+
+The env now emits `final_fidelity`, `final_max_fidelity`, `episode_completed`, `episode_length`, and `final_return` once per episode (on termination/truncation only). The old per-step keys are time-averaged over every frame including resets, which diluted a perfect 2-step Bell episode to "fidelity 0.583, completed 0.33". The new keys give true per-episode statistics:
+
+| Metric | 2K | 12K | 22.5K | 32.8K | 43K | 100K |
+|---|---|---|---|---|---|---|
+| F_end | 0.813 | 0.880 | 0.996 | 1.000 | 1.000 | 1.000 |
+| Completion | 77% | 84% | 99% | 100% | 100% | 100% |
+| Episode length | 26.4 | 25.3 | 6.8 | 2.5 | 2.1 | 2.0 |
+| Episode return | +3.97 | +4.38 | +5.40 | +5.49 | +5.49 | +5.49 |
+
+**Key reframing**: even the initial random policy eventually completes 77% of episodes (masking-forced exploration stumbles into the Bell state within ~26 gates). Learning is therefore best described as *circuit compression* -- from ~26 gates to the optimal 2 -- not as "learning to succeed at all". The old time-averaged metrics completely hid this.
+
+#### Checkpoint rollouts (`python -m src.tools.evaluate`)
+
+| Checkpoint | Policy | Behavior |
+|---|---|---|
+| 6K | sampled | Meandering 7-47 gate episodes, reaches F=1.0 by exploration |
+| 24.5K | greedy | Optimal 2-gate circuit already the argmax |
+| final | greedy | `H(Q1) -> CNOT(1->0)`, F=1.0000, 100% completion |
+
+Note: this run's greedy policy converged to the **Q1-first** Bell circuit, the mirror of Run 3's Q0-first preference. Both are optimal by symmetry; which variant wins the argmax is seed/run dependent.
+
+**Model**: `models/noiseless_mgr/final.pt` (+ 16 checkpoints)
+**Config**: `models/noiseless_mgr/config.json`
+**TensorBoard**: `logs/tensorboard/noiseless_mgr/`
+
+---
+
+### Run 6: `multi_bell` (Multi-Bell Conditional Policy)
+
+**Date**: 2026-06-09
+**Goal**: Train a single policy that prepares any of the 4 Bell states, conditioning its gate sequence on the target encoded in the observation. First Phase-2 (generalization) run.
+
+#### Environment changes (new, backward-compatible)
+
+- `multi_target=True`: target sampled uniformly from {|Φ+⟩, |Φ-⟩, |Ψ+⟩, |Ψ-⟩} at every `reset()` (`fixed_target_index` pins it for evaluation)
+- Observation 17 → 32 dims: `[17:32]` = the target state's 15 Pauli expectations (6 single-qubit + 9 correlators), precomputed once at init
+- New metrics: per-step `target_{name}` sampling flags, plus per-target end-of-episode keys `final_fidelity_{name}`, `episode_completed_{name}`, `episode_length_{name}`
+- Default single-target mode is unchanged (17-dim obs) -- all earlier checkpoints still load
+
+#### Pre-experiment analysis
+
+Brute-forced minimal circuits over the 8 non-identity gates (sanity-checked in `test_environment.py`):
+
+| Target | F_init from \|00⟩ | Min depth | # optimal circuits |
+|---|---|---|---|
+| \|Φ+⟩ | 0.5 | 2 | 2 |
+| \|Φ-⟩ | 0.5 | 3 | 8 |
+| \|Ψ+⟩ | 0.0 | 3 | 8 |
+| \|Ψ-⟩ | 0.0 | 4 | 48 |
+
+Two structural notes: (1) the lazy-agent trap only exists for the Φ targets (F_init=0.5); for Ψ targets F_max starts at 0 and any improvement is rewarded. (2) MGR headroom differs per target (0.5 total improvement for Φ, 1.0 for Ψ), so episode returns are target-dependent (+5.49 vs +5.99) and the value function must read the target block of the observation to predict them.
+
+| Parameter | Value | Change from Run 3 |
+|---|---|---|
+| multi_target | **True** | New |
+| Observation | **32-dim** (17 + 15 target Paulis) | Was 17-dim |
+| Reward | MGR + action masking | Same |
+| completion_threshold | 0.95 | Same |
+| total_timesteps | **500K** | Was 100K |
+| checkpoint_interval | **10K** | Was 25K |
+| Noise | None | Same |
+| PPO hyperparams | Adam 3e-4, gamma 0.95, ent_coef 0.05, 8 epochs, hidden 128, seed 42 | Same |
+
+**Result**: **Full success** -- one policy, four distinct minimal-depth circuits. Training took ~5.5 minutes (502K steps).
+
+Per-target episode length / completion over training (end-of-episode metrics):
+
+| Step | Entropy | \|Φ+⟩ | \|Φ-⟩ | \|Ψ+⟩ | \|Ψ-⟩ |
+|---|---|---|---|---|---|
+| 2K | 2.197 | 32.3 / 68% | 26.0 / 71% | 24.9 / 100% | 24.2 / 92% |
+| 51K | 2.084 | 15.1 / 96% | 22.9 / 84% | 18.8 / 89% | 28.3 / 81% |
+| 78K | 1.817 | 3.4 / 100% | 13.0 / 98% | 9.8 / 98% | 19.2 / 96% |
+| 102K | 0.906 | 2.7 / 100% | 4.0 / 100% | 3.4 / 100% | 5.9 / 100% |
+| 131K | 0.590 | 2.2 / 100% | 3.7 / 100% | 3.3 / 100% | 4.4 / 100% |
+| 262K | 0.429 | 2.0 / 100% | 3.1 / 100% | 3.0 / 100% | 4.1 / 100% |
+| 502K | 0.461 | 2.4 / 99% | 3.0 / 100% | 3.0 / 100% | 4.0 / 100% |
+
+Convergence order followed circuit depth exactly (Φ+ first, Ψ- last). All four targets hit 100% completion by ~102K steps; lengths compress to the optimal 2/3/3/4 by ~260K, giving the optimal mean episode length of 3.0.
+
+#### Greedy rollouts (`evaluate.py --target ...`)
+
+| Target | Discovered circuit | Depth | F_end | Return |
+|---|---|---|---|---|
+| \|Φ+⟩ | H(Q1) → CNOT(1→0) | 2 (optimal) | 1.0000 | +5.49 |
+| \|Φ-⟩ | H(Q1) → CNOT(1→0) → Z(Q1) | 3 (optimal) | 1.0000 | +5.48 |
+| \|Ψ+⟩ | X(Q0) → H(Q1) → CNOT(1→0) | 3 (optimal) | 1.0000 | +5.99 |
+| \|Ψ-⟩ | X(Q0) → H(Q1) → CNOT(1→0) → Z(Q1) | 4 (optimal) | 1.0000 | +5.98 |
+
+Mixed-target eval (20 episodes, random targets): 100% completion, F_end = 1.0000 ± 0.0000, every episode at minimal depth.
+
+**Key finding -- the policy is compositional, not a 4-entry lookup table.** All four circuits share the Q1-first Bell core H(Q1) → CNOT(1→0); the agent prepends X(Q0) iff the target is a Ψ state (bit flip) and appends Z(Q1) iff it is a minus state (phase flip). The converged action distribution matches this family exactly: H_Q1 33.3%, CNOT_10 33.2%, X_Q0 16.6%, Z_Q1 16.3%, all other gates < 0.3% (per 4 episodes = 12 gates: H1 and CN10 appear 4x each, X0 and Z1 2x each).
+
+**Other findings**:
+- Convergence is ~3x slower than single-target (stable by ~130K steps vs ~40K) for 4x the strategy space -- consistent with the hypothesis of slower but tractable learning
+- Entropy plateaus at ~0.45 instead of collapsing toward 0: the conditional policy keeps four target-dependent action distributions alive
+- explained_variance plateaus at ~0.67 (vs 0.999 single-target), even though the target is observable -- value prediction is harder when returns depend on target identity and position within the circuit
+
+**Open questions answered**:
+- 32-dim Pauli encoding of the target is sufficient -- no one-hot needed. The agent conditions on the physical description of the target state.
+- The agent discovers the *shortest* circuit for every target (greedy argmax is minimal-depth in all 4 cases), not a longer universal sequence.
+- Entropy with 4 strategies stays elevated (~0.45): per-state the policy is near-deterministic, but the marginal over targets keeps it high.
+
+**Model**: `models/multi_bell/final.pt` (+ 49 checkpoints at ~10K intervals)
+**Config**: `models/multi_bell/config.json`
+**TensorBoard**: `logs/tensorboard/multi_bell/`
+
+---
+
 ## Planned Experiments
 
 ### Narrative Arc
 
-Runs 1-5 established the MGR + masking architecture and proved it robust under noise. But all five runs train a single-target agent -- it memorizes one circuit (H→CNOT for |Φ+⟩). The next phase tests **generalization**: can a single policy learn to compile circuits for *multiple* target states, adapting its gate sequence based on what it observes?
+Runs 1-5 established the MGR + masking architecture and proved it robust under noise. But all five runs train a single-target agent -- it memorizes one circuit (H→CNOT for |Φ+⟩). Phase 2 tests **generalization**: can a single policy learn to compile circuits for *multiple* target states, adapting its gate sequence based on what it observes? Run 6 answered yes for the noiseless case (compositional 4-target policy, all minimal-depth); Run 7 adds noise on top.
 
 This is the transition from "proof-of-concept reward architecture" to "general-purpose RL circuit compiler."
 
@@ -252,8 +369,8 @@ Phase 1 (complete): Architecture validation
   Run 4  Robust under fixed noise
   Run 5  Robust under domain-randomized noise
 
-Phase 2 (next): Multi-target generalization
-  Run 6  Multi-Bell: conditional policy across 4 Bell states
+Phase 2 (in progress): Multi-target generalization
+  Run 6  Solved: conditional compiler across all 4 Bell states
   Run 7  Multi-Bell + meta-noise: generalize over targets AND noise
 
 Phase 3 (future): Hardware relevance
@@ -263,51 +380,9 @@ Phase 3 (future): Hardware relevance
 
 ---
 
-### Experiment 6: Multi-Bell Conditional Policy
-
-**Status**: Next up
-**Goal**: Train a single policy that prepares any of the 4 Bell states, selecting different gate sequences based on the target.
-
-#### Why this matters
-
-Runs 3-5 all converge to the same H→CNOT circuit because the target never changes. The agent is a lookup table with one entry. Experiment 6 forces the agent to become a **conditional circuit compiler**: it must read the target from its observation and output different circuits accordingly.
-
-#### The 4 Bell states and their optimal circuits
-
-| Target | State | Optimal circuit from \|00⟩ | Depth |
-|---|---|---|---|
-| \|Φ+⟩ | (\|00⟩+\|11⟩)/√2 | H → CNOT | 2 |
-| \|Φ-⟩ | (\|00⟩-\|11⟩)/√2 | X → H → CNOT (or H → Z → CNOT) | 3 |
-| \|Ψ+⟩ | (\|01⟩+\|10⟩)/√2 | H → CNOT → X | 3 |
-| \|Ψ-⟩ | (\|01⟩-\|10⟩)/√2 | X → H → CNOT → X (or H → Z → CNOT → X) | 4 |
-
-The circuits are genuinely different -- the agent must learn 4 distinct strategies and select among them based on the target state information in the observation.
-
-#### Environment changes required
-
-1. **Randomize target state per episode**: sample uniformly from {|Φ+⟩, |Φ-⟩, |Ψ+⟩, |Ψ-⟩} at each `reset()`
-2. **Expand observation space**: add the target state's Pauli expectations (15 floats: 6 single-qubit + 9 two-qubit correlators) to the observation, giving a 32-dim obs. Without this, the agent cannot distinguish targets.
-3. **MGR and action masking**: unchanged -- they work for any target by construction
-4. **Completion threshold**: 0.95 (noiseless); lower for noisy variant
-
-#### Hypotheses
-
-- The agent should discover all 4 optimal circuits
-- Convergence will be slower (4x the strategy space, longer optimal circuits for |Ψ-⟩)
-- The policy must learn to condition on the target-state correlators in the observation
-- 200K-500K timesteps likely needed
-
-#### Open questions
-
-- Is 32-dim obs sufficient, or should the target be encoded more compactly (e.g., a 4-dim one-hot)?
-- Does the agent discover the *shortest* circuit for each target, or converge to a longer universal sequence?
-- How does entropy behave when the policy must maintain 4 distinct strategies?
-
----
-
 ### Experiment 7: Multi-Bell + Meta-Noise
 
-**Status**: After Experiment 6
+**Status**: Next up
 **Goal**: Combine multi-target generalization with domain-randomized noise.
 
 This is the capstone of Phase 2: a single policy that prepares any Bell state under any noise regime. If this works, the agent is a genuine general-purpose 2-qubit circuit compiler.
@@ -358,6 +433,28 @@ The Bell state in IBM native gates requires 4 physical gates: `Rz(π/2) → SX �
 - Observation space: 3 single-qubit Paulis x 3 qubits = 9, plus 27 two-qubit correlators, plus fidelity + step = 38 dimensions
 - Action space: single-qubit gates on 3 qubits + CNOT on 6 qubit pairs + Identity = ~19 actions
 - Environment needs `_create_gate_maps()`, `_build_pauli_operators()`, and obs space refactored for variable `num_qubits`
+
+---
+
+## Planned Demo Video (Manim Explainer)
+
+**Status**: Approach decided 2026-06-09, not started.
+**Decision**: Manim-style animated explainer, chosen over (a) screen-recording the pygame demo, (b) a headless matplotlib montage MP4, (c) an interactive web demo.
+
+Story beats:
+1. The problem: prepare the Bell state from |00⟩; the fidelity landscape is non-monotonic (0.5 → 0.25 → 1.0 along the optimal path)
+2. The trap: absolute reward → lazy agent (Run 2 final policy as villain footage: Identity 99.5%)
+3. The fix: Moving-Goalpost Reward + action masking, animated on the reward landscape
+4. The learning: policy rollouts at successive training checkpoints (source TBD, see below)
+5. The payoff: H→CNOT in 2 steps, F=1.000; same circuit survives fixed noise (F=0.983 ceiling) and domain-randomized noise
+
+Prerequisites:
+- ~~A rollout-extraction script (`evaluate.py`)~~ **DONE (2026-06-09)**: `python -m src.tools.evaluate --checkpoint <path> --json out.json` dumps per-step actions, gate probabilities, value estimates, fidelities, entanglement, and density matrices. Handles wrapped `.pt` and flat `.pth` checkpoints, greedy or sampled rollouts, `--noiseless` override.
+- Mid-training checkpoint source: **DECIDED (2026-06-09) — Option C, both**: re-run `noiseless_mgr` with dense checkpoints (~5K interval) for the main learning arc, plus the existing `fixed_noise`/`meta_noise` checkpoints (7 each, ~26.6K apart) for a noise-robustness act. Four-act structure: the trap (Run 2 cameo) → the learning (noiseless snapshots) → mastery (F=1.0) → robustness under noise (F=0.983 / randomized)
+  - ~~Noiseless re-run~~ **DONE (2026-06-09)**: see Run 3b — 16 checkpoints under `models/noiseless_mgr/`, transition window ~12K-43K steps captured
+- Run 1 (Muon, ≈random) and Run 2 (lazy agent) final policies as failure-mode cameos — no retraining needed
+- TensorBoard curves (entropy, episode length, completion rate) for a synced training-progress scrubber
+- New dependency: `manim` (Community Edition) — not yet in requirements.txt
 
 ---
 

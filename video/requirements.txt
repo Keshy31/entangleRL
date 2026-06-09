@@ -1,0 +1,11 @@
+# Demo video rendering environment (separate from the training env).
+#
+# ManimPango ships no Linux wheels, so on WSL/Linux it needs system libs
+# (libcairo2-dev, libpango1.0-dev, pkg-config) to build from source.
+# On Windows/macOS this installs cleanly from wheels:
+#
+#   python -m venv .manim-env
+#   .manim-env\Scripts\python -m pip install -r video/requirements.txt
+#
+manim>=0.19.0                   # Animated explainer scenes (Community Edition)
+imageio-ffmpeg>=0.5.0           # Bundled ffmpeg binary for stitching act clips

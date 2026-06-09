@@ -51,6 +51,17 @@ EXPERIMENT_PRESETS = {
         },
         "train": {"total_timesteps": 500_000},
     },
+    "multi_bell": {
+        # Experiment 6: conditional policy across all 4 Bell states.
+        # Target sampled per episode; obs grows 17 -> 32 (target Paulis).
+        # Optimal depths: phi+ 2, phi- 3, psi+ 3, psi- 4 gates.
+        "experiment_name": "multi_bell",
+        "env": {
+            "multi_target": True,
+            "completion_threshold": 0.95,
+        },
+        "train": {"total_timesteps": 500_000, "checkpoint_interval": 10_000},
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -58,6 +69,7 @@ EXPERIMENT_PRESETS = {
 # ---------------------------------------------------------------------------
 DEFAULT_ENV_KWARGS = {
     "meta_noise": False,
+    "multi_target": False,
     "amplitude_damping_rate": 0.0,
     "dephasing_rate": 0.0,
     "depolarizing_rate": 0.0,
@@ -248,6 +260,7 @@ def train(experiment_name, env_kwargs, train_kwargs):
         for k in ("amplitude_damping_rate", "dephasing_rate", "depolarizing_rate",
                    "bit_flip_rate", "thermal_occupation", "gate_time"):
             print(f"    {k}: {env_kwargs.get(k, 0)}")
+    print(f"  Targets: {'4 Bell states (multi-target)' if env_kwargs.get('multi_target') else 'single Bell |Phi+>'}")
     print(f"  Completion threshold: {env_kwargs['completion_threshold']}")
     print(f"{'=' * 60}\n")
 
@@ -286,18 +299,20 @@ def train(experiment_name, env_kwargs, train_kwargs):
                 writer.add_scalar(tb_key, val, step)
 
         # --- Console progress (every ~10 seconds) ---
+        # Prefer end-of-episode metrics (true per-episode stats); fall back to
+        # the time-averaged per-step keys for older env versions.
         now = time.time()
         if now - last_log_time > 10.0:
-            fid = env_metrics.get('fidelity', 0)
-            max_fid = env_metrics.get('max_fidelity', 0)
-            completion = env_metrics.get('completed', 0)
-            ep_ret = env_metrics.get('episode_return', 0)
-            ep_len = env_metrics.get('steps', 0)
+            fid = env_metrics.get('final_fidelity', env_metrics.get('fidelity', 0))
+            max_fid = env_metrics.get('final_max_fidelity', env_metrics.get('max_fidelity', 0))
+            completion = env_metrics.get('episode_completed', env_metrics.get('completed', 0))
+            ep_ret = env_metrics.get('final_return', env_metrics.get('episode_return', 0))
+            ep_len = env_metrics.get('episode_length', env_metrics.get('steps', 0))
             sps = logs.get('SPS', 0)
             entropy = logs.get('losses/entropy', 0)
             pct = step / total_timesteps * 100
-            print(f"  [{pct:5.1f}%] step={step:>7,}  fid={fid:.3f}  "
-                  f"max_fid={max_fid:.3f}  done%={completion:.2f}  "
+            print(f"  [{pct:5.1f}%] step={step:>7,}  F_end={fid:.3f}  "
+                  f"F_max={max_fid:.3f}  done%={completion:.2f}  "
                   f"ret={ep_ret:+.2f}  len={ep_len:.1f}  "
                   f"ent={entropy:.3f}  SPS={sps:.0f}")
             last_log_time = now
@@ -314,11 +329,13 @@ def train(experiment_name, env_kwargs, train_kwargs):
     # Also save as flat .pth for backward compatibility with visualization engine
     torch.save(trainer.policy.state_dict(), f"models/{experiment_name}.pth")
 
-    # Update hparam metrics with final values
+    # Update hparam metrics with final values (per-episode keys preferred)
     writer.add_scalar("hparam/final_fidelity",
-                       env_metrics.get('fidelity', 0), step)
+                       env_metrics.get('final_fidelity',
+                                       env_metrics.get('fidelity', 0)), step)
     writer.add_scalar("hparam/final_completion_rate",
-                       env_metrics.get('completed', 0), step)
+                       env_metrics.get('episode_completed',
+                                       env_metrics.get('completed', 0)), step)
 
     print(f"\n{'=' * 60}")
     print(f"  Training complete: {step:,} steps")

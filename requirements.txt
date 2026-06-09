@@ -18,6 +18,10 @@ seaborn>=0.12.0                # Enhanced plotting aesthetics
 tqdm>=4.65.0                    # Progress bars
 tensorboard>=2.13.0             # Training metrics logging
 
+# Video rendering: see video/requirements.txt (separate env -- manim's
+# ManimPango has no Linux wheels, so it won't pip-install inside WSL
+# without system pango dev libs; render on Windows/macOS instead)
+
 # Development Tools (optional)
 pytest>=7.4.0                  # Unit testing
 black>=23.0.0                   # Code formatting

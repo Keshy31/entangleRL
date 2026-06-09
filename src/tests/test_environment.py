@@ -166,6 +166,64 @@ def main():
     noisy_env.close()
     print(f"  Noisy environment: OK")
 
+    # 9. Multi-target mode: 4 Bell states, 32-dim obs, per-target metrics
+    print(f"\n--- Multi-target (4 Bell states) checks ---")
+    env_single = QuantumPrepEnv()
+    obs, _ = env_single.reset()
+    assert obs.shape == (17,), f"Default env obs must stay (17,), got {obs.shape}"
+    env_single.close()
+
+    mt_env = QuantumPrepEnv(multi_target=True)
+    assert mt_env.observation_space.shape == (32,), (
+        f"Multi-target obs space should be (32,), got {mt_env.observation_space.shape}")
+    obs, info = mt_env.reset()
+    assert obs.shape == (32,), f"Multi-target obs should be (32,), got {obs.shape}"
+    np.testing.assert_allclose(
+        obs[17:32], mt_env._target_paulis[mt_env.target_index], atol=1e-6,
+        err_msg="Target block of obs must match the sampled target's Paulis")
+    name = mt_env.target_names[mt_env.target_index]
+    assert info[f"target_{name}"] == 1.0, "Per-step target one-hot flag missing/wrong"
+
+    seen = set()
+    for _ in range(64):
+        mt_env.reset()
+        seen.add(mt_env.target_index)
+    assert seen == {0, 1, 2, 3}, f"Expected all 4 targets across resets, saw {seen}"
+    mt_env.close()
+    print(f"  Obs space (32,), target block consistent, all 4 targets sampled: OK")
+
+    # Initial fidelity from |00>: phi+/- = 0.5, psi+/- = 0.0
+    for idx, expect_f0 in [(0, 0.5), (1, 0.5), (2, 0.0), (3, 0.0)]:
+        e = QuantumPrepEnv(multi_target=True, fixed_target_index=idx)
+        _, info = e.reset()
+        assert abs(info["fidelity"] - expect_f0) < 1e-6, (
+            f"{e.target_names[idx]}: expected F_init={expect_f0}, got {info['fidelity']:.4f}")
+        e.close()
+    print(f"  Initial fidelities (0.5 / 0.5 / 0.0 / 0.0): OK")
+
+    # Scripted optimal circuits (depths 2/3/3/4) reach F~1.0 and terminate
+    optimal_circuits = {
+        0: [0, 6],         # phi_plus:  H0 -> CNOT01
+        1: [0, 4, 6],      # phi_minus: H0 -> Z0 -> CNOT01
+        2: [0, 3, 6],      # psi_plus:  H0 -> X1 -> CNOT01
+        3: [0, 3, 4, 6],   # psi_minus: H0 -> X1 -> Z0 -> CNOT01
+    }
+    for idx, actions in optimal_circuits.items():
+        e = QuantumPrepEnv(multi_target=True, fixed_target_index=idx)
+        e.reset()
+        name = e.target_names[idx]
+        terminated = False
+        for action in actions:
+            _, _, terminated, _, info = e.step(action)
+        assert terminated, f"{name}: optimal circuit should terminate the episode"
+        assert info["fidelity"] > 0.999, (
+            f"{name}: expected F~1.0, got {info['fidelity']:.4f}")
+        assert f"final_fidelity_{name}" in info, (
+            f"Missing per-target end-of-episode key for {name}")
+        circuit = " -> ".join(e._gate_name_map[a] for a in actions)
+        print(f"  {name:9s} ({len(actions)} gates): F={info['fidelity']:.4f}  {circuit}")
+        e.close()
+
     print("\n=== ALL SANITY CHECKS PASSED ===")
 
 

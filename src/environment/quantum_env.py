@@ -17,11 +17,23 @@ class QuantumPrepEnv(gymnasium.Env):
     The agent applies quantum gates to transform |00> into a target state
     (default: Bell state) with maximum fidelity.
 
-    Observation Space (17 floats, all in [-1, 1]):
-        [0:6]  Single-qubit Pauli expectations: <X0>, <Y0>, <Z0>, <X1>, <Y1>, <Z1>
-        [6:15] Two-qubit correlators: <XX>, <XY>, <XZ>, <YX>, <YY>, <YZ>, <ZX>, <ZY>, <ZZ>
-        [15]   Current fidelity (squared)
-        [16]   Normalized step count (current_step / max_steps)
+    Observation Space (all floats in [-1, 1]):
+        Single-target (default, 17 floats):
+            [0:6]  Single-qubit Pauli expectations: <X0>, <Y0>, <Z0>, <X1>, <Y1>, <Z1>
+            [6:15] Two-qubit correlators: <XX>, <XY>, <XZ>, <YX>, <YY>, <YZ>, <ZX>, <ZY>, <ZZ>
+            [15]   Current fidelity (squared)
+            [16]   Normalized step count (current_step / max_steps)
+        Multi-target (multi_target=True, 32 floats):
+            [0:17]  Same as single-target
+            [17:32] Target state's Pauli expectations (6 single-qubit + 9 correlators)
+
+    Multi-target mode:
+        At each reset() the target is sampled uniformly from the 4 Bell states
+        {|Φ+>, |Φ->, |Ψ+>, |Ψ->} (or pinned via fixed_target_index). The agent
+        must read the target block of the observation to choose the right
+        circuit. Info gains per-step target_{name} one-hot flags and, on
+        episode end, per-target keys: final_fidelity_{name},
+        episode_completed_{name}, episode_length_{name}.
 
     Action Space: Discrete(9)
         0: H on Q0,  1: H on Q1,  2: X on Q0,  3: X on Q1,
@@ -37,9 +49,24 @@ class QuantumPrepEnv(gymnasium.Env):
         The immediately preceding action is masked to prevent the agent from
         undoing its last gate or stalling with repeated Identity.
 
+    Info dict:
+        Per-step: fidelity, max_fidelity, steps, entanglement, episode_return,
+        completed, action_mask, action_{i}_taken flags.
+        On episode end only (terminated or truncated): final_fidelity,
+        final_max_fidelity, episode_completed, episode_length, final_return.
+        These are emitted once per episode so vectorized trainers aggregate
+        them into true per-episode statistics; the per-step keys get diluted
+        by reset and mid-episode frames (e.g. a perfect 2-step Bell episode
+        time-averages to fidelity 0.583 = mean(0.5, 0.25, 1.0)).
+
     Episode ends when fidelity > completion_threshold (default 0.95) or max_steps reached.
     """
     metadata = {'render_modes': ['human'], 'render_fps': 4}
+
+    # The 4 Bell states used in multi-target mode (QuTiP bell_state codes).
+    TARGET_NAMES = ("phi_plus", "phi_minus", "psi_plus", "psi_minus")
+    BELL_CODES = ("00", "01", "10", "11")
+
     def __init__(
         self,
         num_qubits=2,
@@ -54,10 +81,15 @@ class QuantumPrepEnv(gymnasium.Env):
         thermal_occupation=0.0,
         meta_noise=False,
         completion_threshold=0.95,
+        multi_target=False,
+        fixed_target_index=None,
         seed=None,
     ):
+        self.multi_target = multi_target
+        self.fixed_target_index = fixed_target_index
+        obs_dim = 32 if multi_target else 17
         self.observation_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(17,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(9)
        
@@ -84,9 +116,25 @@ class QuantumPrepEnv(gymnasium.Env):
         # The initial state is |0...0> for the given number of qubits.
         initial_ket = qutip.tensor([qutip.basis(2, 0)] * self.num_qubits)
         self.initial_state = qutip.ket2dm(initial_ket)
-       
+
+        # Pauli operators are needed both for observations and (in multi-target
+        # mode) for the precomputed target-state expectation vectors.
+        self._build_pauli_operators()
+
+        self.target_index = 0
+        if self.multi_target:
+            if self.num_qubits != 2:
+                raise ValueError("multi_target mode is only defined for 2 qubits.")
+            self.target_names = list(self.TARGET_NAMES)
+            self.target_states = [
+                qutip.ket2dm(qutip.bell_state(code)) for code in self.BELL_CODES
+            ]
+            self._target_paulis = [
+                self._pauli_expectations(dm) for dm in self.target_states
+            ]
+            self.target_state = self.target_states[self.target_index]
         # The target state defaults to the Bell state |Φ+⟩ for 2 qubits.
-        if target_state is None:
+        elif target_state is None:
             if self.num_qubits != 2:
                 raise ValueError("Default target state is only defined for 2 qubits.")
             target_ket = qutip.bell_state('00')
@@ -104,8 +152,6 @@ class QuantumPrepEnv(gymnasium.Env):
         self.last_action = None
         self.episode_return = 0.0
 
-        self._build_pauli_operators()
-        
         warnings.filterwarnings('ignore', category=LinAlgWarning)
 
         # --- Visualization ---
@@ -185,7 +231,14 @@ class QuantumPrepEnv(gymnasium.Env):
             self.depolarizing_rate = np.random.uniform(0.0, 0.05)
             self.bit_flip_rate = np.random.uniform(0.0, 0.05)
             self.thermal_occupation = np.random.uniform(0.0, 0.1)
-       
+
+        if self.multi_target:
+            if self.fixed_target_index is not None:
+                self.target_index = int(self.fixed_target_index)
+            else:
+                self.target_index = int(np.random.randint(len(self.target_states)))
+            self.target_state = self.target_states[self.target_index]
+
         self.current_state = self.initial_state.copy()
         self.current_step = 0
         self.last_action = None
@@ -287,7 +340,19 @@ class QuantumPrepEnv(gymnasium.Env):
         # --- Return values ---
         observation = self._get_obs()
         info = self._get_info(terminated=terminated)
-        
+
+        if terminated or truncated:
+            info["final_fidelity"] = self.last_fidelity
+            info["final_max_fidelity"] = self.max_fidelity
+            info["episode_completed"] = 1.0 if terminated else 0.0
+            info["episode_length"] = float(self.current_step)
+            info["final_return"] = self.episode_return
+            if self.multi_target:
+                name = self.target_names[self.target_index]
+                info[f"final_fidelity_{name}"] = self.last_fidelity
+                info[f"episode_completed_{name}"] = 1.0 if terminated else 0.0
+                info[f"episode_length_{name}"] = float(self.current_step)
+
         return observation, reward, terminated, truncated, info
     
     def _build_pauli_operators(self):
@@ -312,18 +377,23 @@ class QuantumPrepEnv(gymnasium.Env):
             for p1 in paulis:
                 self._two_qubit_paulis.append(qutip.tensor(p0, p1))
 
-    def _get_obs(self):
-        """Returns 17-dim observation: single-qubit Paulis, two-qubit correlators, fidelity, step."""
-        rho = self.current_state
-        obs = np.empty(17, dtype=np.float32)
-
+    def _pauli_expectations(self, rho):
+        """15-dim Pauli expectation vector (6 single-qubit + 9 correlators) for a state."""
+        vals = np.empty(15, dtype=np.float32)
         for i, op in enumerate(self._single_paulis):
-            obs[i] = (op * rho).tr().real
+            vals[i] = (op * rho).tr().real
         for i, op in enumerate(self._two_qubit_paulis):
-            obs[6 + i] = (op * rho).tr().real
+            vals[6 + i] = (op * rho).tr().real
+        return vals
 
+    def _get_obs(self):
+        """Observation: current-state Paulis, fidelity, step (+ target Paulis in multi-target mode)."""
+        obs = np.empty(self.observation_space.shape[0], dtype=np.float32)
+        obs[0:15] = self._pauli_expectations(self.current_state)
         obs[15] = np.float32(self.last_fidelity)
         obs[16] = np.float32(self.current_step / self.max_steps)
+        if self.multi_target:
+            obs[17:32] = self._target_paulis[self.target_index]
         return obs
     
     def _get_info(self, terminated=False):
@@ -340,6 +410,10 @@ class QuantumPrepEnv(gymnasium.Env):
         if self.last_action is not None:
             for i in range(self.action_space.n):
                 info[f"action_{i}_taken"] = 1.0 if self.last_action == i else 0.0
+
+        if self.multi_target:
+            for i, name in enumerate(self.target_names):
+                info[f"target_{name}"] = 1.0 if i == self.target_index else 0.0
 
         mask = np.ones(self.action_space.n, dtype=bool)
         if self.last_action is not None:

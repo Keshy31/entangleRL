@@ -1,5 +1,6 @@
 # Environments
 .entangleRL-env/
+.manim-env/
 .venv
 venv/
 env/
@@ -14,6 +15,9 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# Video render output
+video/media/
 
 # Logs and data
 logs/
