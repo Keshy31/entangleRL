@@ -353,11 +353,166 @@ Mixed-target eval (20 episodes, random targets): 100% completion, F_end = 1.0000
 
 ---
 
+### Run 7: `multi_bell_meta_noise` (Multi-Bell + Meta-Noise — Phase 2 Capstone)
+
+**Date**: 2026-06-10
+**Goal**: One policy that prepares any of the 4 Bell states under domain-randomized noise. `multi_target` and `meta_noise` compose with no env changes; observation stays 32-dim and noise rates remain unobserved.
+
+#### Pre-experiment analysis (`noise_analysis.py --multi_bell`, new mode)
+
+For each target, brute-forced the minimal-depth noiseless-optimal circuits, then ranked every ordering under worst-case noise (all meta-noise rates maxed: ad=0.2, deph=0.1, depol=0.05, bf=0.05, th=0.1) and mean rates (half of max). 200-episode Monte Carlo under sampled meta-noise estimated the completion ceiling at threshold 0.80:
+
+| Target | Depth | # opt | WC best | WC worst | Spread | Mean best | MC comp @0.80 |
+|---|---|---|---|---|---|---|---|
+| \|Φ+⟩ | 2 | 2 | 0.9181 | 0.9181 | 0.0000 | 0.9595 | 100% |
+| \|Φ-⟩ | 3 | 8 | 0.8884 | 0.8785 | 0.0099 | 0.9445 | 100% |
+| \|Ψ+⟩ | 3 | 8 | 0.9057 | 0.8779 | 0.0278 | 0.9538 | 100% |
+| \|Ψ-⟩ | 4 | 48 | 0.8949 | 0.8400 | 0.0549 | 0.9485 | 100% |
+
+**Gate ordering matters under noise**, and the spread grows with depth (5.5% for |Ψ-⟩). The noise-optimal rule is *stay classical as long as possible*: bit-flips (X) first in the computational basis, H next, the entangling CNOT last, no gates after entanglement (e.g. |Ψ-⟩ best: `X(Q0) → X(Q1) → H(Q0) → CNOT(0→1)`). Notably the |Φ-⟩ noise-best ordering creates the minus phase via `X(Q0) → H(Q0)` (|1⟩ → |−⟩) instead of appending Z after the CNOT — a compositionally different circuit from Run 6's.
+
+Threshold 0.80 clears the worst-case ceiling floor (0.8884) with +0.088 margin → proceed, no contingency. One foreshadowing note: even the *worst* minimal-depth ordering (0.8400) clears 0.80, so the completion bonus cannot discriminate between orderings — only the small MGR fidelity-record differences (~0.01-0.05) push toward noise-optimal circuits.
+
+| Parameter | Value | Change from Run 6 |
+|---|---|---|
+| multi_target | True | Same |
+| meta_noise | **True** (5 channels, U(0, max) per episode) | Was False |
+| completion_threshold | **0.80** | Was 0.95 |
+| total_timesteps | **1M** | Was 500K |
+| checkpoint_interval | 25K | Was 10K |
+| Observation | 32-dim, noise rates NOT observed | Same |
+| PPO hyperparams | Adam 3e-4, gamma 0.95, ent_coef 0.05, 8 epochs, hidden 128, seed 42 | Same |
+
+Training ran at ~783 SPS (~21 min for 1,001,472 steps), 37 checkpoints.
+
+**Result**: **Success on robustness and conditionality, with a genuine surprise on depth.** All 4 targets reach 100% training completion; but the converged policy is *alphabet-minimal, not depth-minimal*.
+
+Per-target episode length / completion over training (end-of-episode metrics; entropy and explained variance alongside):
+
+| Step | Entropy | expl_var | \|Φ+⟩ | \|Φ-⟩ | \|Ψ+⟩ | \|Ψ-⟩ |
+|---|---|---|---|---|---|---|
+| 4K | 2.197 | 0.05 | 11.2 / 100% | 43.7 / 14% | 38.7 / 29% | 44.2 / 15% |
+| 49K | 2.146 | 0.19 | 26.8 / 56% | 35.1 / 38% | 29.9 / 50% | 36.9 / 33% |
+| 100K | 1.696 | 0.57 | 2.0 / 100% | 8.6 / 89% | 11.0 / 84% | 19.9 / 67% |
+| 150K | 0.697 | 0.70 | 2.0 / 100% | 3.4 / 99% | **3.1 / 100%** | **4.5 / 99%** |
+| 250K | 0.487 | 0.74 | 2.0 / 100% | 3.0 / 100% | **5.0 / 100%** | **5.9 / 100%** |
+| 500K | 0.443 | 0.70 | 2.0 / 100% | 3.4 / 99% | 5.0 / 100% | 7.0 / 98% |
+| 1M | 0.472 | 0.73 | 2.0 / 100% | 3.0 / 100% | 5.0 / 100% | 6.0 / 100% |
+
+Convergence order again follows circuit depth, and at ~150K **all four targets sat at minimal depth** (2/3/3/4, the Run 6 solution). Then between 150K and 250K the policy *drifted away*: Ψ episode lengths grew from 3.1/4.5 to 5.0/6.0 and stayed there for the remaining 750K steps, with F_end dropping ~0.04 (e.g. Ψ+ 0.941 → 0.898).
+
+#### What the final policy learned: a 3-gate alphabet
+
+Greedy rollouts (identical circuit every episode per target — no per-episode noise adaptation, consistent with Run 5):
+
+| Target | Discovered circuit (final.pt) | Depth | Minimal |
+|---|---|---|---|
+| \|Φ+⟩ | H(Q1) → CNOT(1→0) | 2 | 2 ✓ |
+| \|Φ-⟩ | H(Q1) → CNOT(1→0) → Z(Q1) | 3 | 3 ✓ |
+| \|Ψ+⟩ | H(Q1) → CNOT(1→0) → **H(Q1) → CNOT(1→0) → H(Q1)** | 5 | 3 ✗ |
+| \|Ψ-⟩ | H(Q1) → CNOT(1→0) → H(Q1) → CNOT(1→0) → H(Q1) → Z(Q0) | 6 | 4 ✗ |
+
+The policy uses only **{H(Q1), CNOT(1→0), Z}** — it eliminated X from its vocabulary entirely. Instead of bit-flipping into the Ψ manifold, it reaches Ψ+ by applying a second `H(Q1) → CNOT(1→0) → H(Q1)` block to Φ+ (an in-place Bell-state rotation), and appends Z for minus phases. Every circuit is unitarily exact: noiseless eval gives **F_end = 1.0000 on all four targets** at depths 2/3/5/6 (zero-shot noise→noiseless transfer holds).
+
+#### Final evals under config noise (greedy, 20 episodes/target)
+
+| Target | Completion | F_end | Len | Mean-noise ceiling (best ordering) |
+|---|---|---|---|---|
+| \|Φ+⟩ | 100% | 0.9600 ± 0.0120 | 2.0 | 0.9595 (matched exactly) |
+| \|Φ-⟩ | 100% | 0.9401 ± 0.0169 | 3.0 | 0.9445 (−0.004, trailing-Z ordering) |
+| \|Ψ+⟩ | 100% | 0.9014 ± 0.0263 | 5.0 | 0.9538 (−0.052, two extra gates) |
+| \|Ψ-⟩ | **95%** | 0.8526 ± 0.1541 | 8.2 | 0.9485 (−0.07; one bad-draw truncation) |
+
+Mixed-target run (20 episodes, random targets): 100% completion, F_end = 0.9241 ± 0.0442, mean length 4.2. The single |Ψ-⟩ failure is a near-worst-case noise draw where the 6-gate circuit could not cross 0.80; the greedy policy then has no recovery strategy and the masked random-walk decays the state to F=0.19 over 50 steps (completed-episodes-only mean: 0.888).
+
+#### The cost of the long circuits, quantified
+
+Fixed-rate fidelities of the actual learned circuits vs alternatives (via the analysis tool):
+
+| Circuit | Worst-case F | Mean-noise F |
+|---|---|---|
+| final-1M \|Ψ+⟩ depth 5 | 0.8048 | 0.8991 |
+| checkpoint-159K \|Ψ+⟩ depth 3 (`H(Q1)→CNOT(1→0)→X(Q1)`) | 0.8780 | 0.9387 |
+| noise-best \|Ψ+⟩ depth 3 | 0.9057 | 0.9538 |
+| final-1M \|Ψ-⟩ depth 6 | **0.7712 (below threshold!)** | 0.8800 |
+| checkpoint-159K \|Ψ-⟩ depth 4 (`H(Q1)→CNOT(1→0)→X(Q0)→Z(Q0)`) | 0.8400 | 0.9185 |
+| noise-best \|Ψ-⟩ depth 4 | 0.8949 | 0.9485 |
+
+The 159K checkpoint — captured during the transient minimal-depth phase — **strictly dominates the final policy on Ψ targets** under noise: Ψ+ 0.946/100% vs 0.901/100%, Ψ- 0.929/100% (depth 4) vs 0.853/95% (depth 6). Training 850K steps past 159K made the policy measurably worse on fidelity, depth, and completion robustness, while consolidating its gate alphabet.
+
+**Key findings**:
+- The capstone goal holds: one 5.5K-param policy prepares all 4 Bell states under any noise draw in the meta-noise range, with zero-shot transfer to noiseless. Φ+ tracks its analytic ceiling exactly.
+- **Answer to the key question**: physically, the shortest circuit is always optimal and ordering within minimal depth matters (up to 5.5% worst-case). But the agent found *neither* the noise-optimal orderings nor (for Ψ) minimal depth. At threshold 0.80, every minimal ordering *and* the depth-5/6 family complete in ~all training episodes, so the +5.0 bonus provides no gradient between them; the residual ~0.04-0.07 MGR fidelity differences lost to whatever pressure favors reusing one shared action trunk across targets.
+- Plausible drivers of the drift (open, not established): the Q1-handed trunk receives gradient from all 4 targets (4x traffic vs target-specific branches); a 3-gate alphabet is easier for the small MLP to represent under per-episode return variance; nothing in the objective penalizes depth once completion saturates (the -0.01 step penalty and γ=0.95 discounting of the bonus were evidently too weak: ~0.5 return difference between depth-3 and depth-5 paths, vs per-episode return noise of similar magnitude under meta-noise).
+- explained_variance plateaus at ~0.70-0.74 — essentially Run 6's multi-target level (0.67); stacking unobserved noise on top did not degrade value prediction much further.
+- Best artifact for deployment-style use is **not** `final.pt`: `checkpoint_159744.pt` is the better compiler (minimal-depth, X-using, higher noisy fidelity, 100% completion everywhere).
+
+**Open follow-up — Experiment 7b (threshold as depth regularizer)**: raising `completion_threshold` to 0.85 should restore the depth gradient: the learned depth-5/6 circuits fail bad-noise episodes (worst-case 0.80/0.77 < 0.85) while every target's minimal-depth best ordering still clears it (floor 0.8884), and the Monte Carlo minimum F_end of the minimal circuits across sampled draws (0.899+) stays above 0.85. Prediction: same setup at threshold 0.85 converges to depth 2/3/3/4. **Confirmed — see Run 7b below.**
+
+**Model**: `models/multi_bell_meta_noise/final.pt` (+ 37 checkpoints; see `checkpoint_159744.pt` note above)
+**Config**: `models/multi_bell_meta_noise/config.json`
+**TensorBoard**: `logs/tensorboard/multi_bell_meta_noise/`
+**Eval trajectories**: `experiments/run7_eval/` (per-target noisy/noiseless JSON dumps, 159K-checkpoint probes)
+
+---
+
+### Run 7b: `multi_bell_meta_noise_t85` (Threshold as Depth Regularizer)
+
+**Date**: 2026-06-10
+**Goal**: Test Run 7's causal hypothesis with a single-variable change: `completion_threshold` 0.80 → **0.85**, everything else identical (same preset, same seed 42, 1M steps).
+
+**Mechanism**: at 0.85, Run 7's learned depth-5/6 Ψ circuits fail bad-noise episodes (worst-case F 0.8048 / 0.7712 < 0.85) while every target's minimal-depth circuits still clear it in all sampled noise draws (worst-case floor 0.8884; MC minimum F_end 0.899). The +5.0 completion bonus therefore discriminates depth again.
+
+**Result**: **Hypothesis confirmed on all three predictions.** Minimal depths restored, X back in the gate alphabet, and — where ordering matters — noise-optimal orderings discovered.
+
+Training (end-of-episode metrics; compare Run 7's drift window):
+
+| Step | Entropy | \|Φ+⟩ | \|Φ-⟩ | \|Ψ+⟩ | \|Ψ-⟩ |
+|---|---|---|---|---|---|
+| 4K | 2.197 | 28.2 / 50% | 50.0 / 0% | 43.9 / 13% | 50.0 / 0% |
+| 100K | 1.836 | 2.1 / 100% | 22.3 / 59% | 15.6 / 74% | 32.5 / 45% |
+| 150K | 0.994 | 2.5 / 99% | 5.4 / 95% | 5.2 / 96% | 7.0 / 95% |
+| 250K | 0.401 | 2.0 / 100% | 3.0 / 100% | 3.0 / 100% | 4.1 / 100% |
+| 500K | 0.432 | 2.0 / 100% | 3.0 / 100% | 3.0 / 100% | 4.0 / 100% |
+| 1M | 0.523 | 2.0 / 100% | 3.4 / 99% | 3.0 / 100% | 4.0 / 100% |
+
+Early learning is slower than Run 7 (a random policy crosses 0.85 less often than 0.80 — 0% initial completion on Φ-/Ψ- vs 14-15%), but convergence lands at minimal depth by ~250K and **stays pinned through 1M** — the 150K→250K drift to depth 5/6 never happens.
+
+Greedy rollouts (final.pt, 20 noisy episodes/target, identical circuit every episode):
+
+| Target | Circuit | Depth | F_end (7b) | F_end (Run 7) | Mean-noise ceiling |
+|---|---|---|---|---|---|
+| \|Φ+⟩ | H(Q0) → CNOT(0→1) | 2 ✓ | 0.9600 ± 0.0120 | 0.9600 | 0.9595 |
+| \|Φ-⟩ | H(Q0) → CNOT(0→1) → Z(Q0) | 3 ✓ | 0.9401 ± 0.0169 | 0.9401 | 0.9445 |
+| \|Ψ+⟩ | **X(Q1) → H(Q0) → CNOT(0→1)** | 3 ✓ | **0.9546 ± 0.0126** | 0.9014 (d5) | 0.9538 |
+| \|Ψ-⟩ | **X(Q1) → CNOT(1→0) → H(Q1) → CNOT(1→0)** | 4 ✓ | **0.9496 ± 0.0131** | 0.8526 (d6, 95%) | 0.9485 |
+
+100% completion on every target (Run 7's Ψ- worst-case failure mode is gone). Mixed 20-episode run: 100%, F_end = 0.9556 ± 0.0211, mean length 3.1. Noiseless eval: F = 1.0000 on all four targets at depths 2/3/3/4.
+
+**Ordering analysis** (the bonus question):
+- |Ψ+⟩: the agent's circuit is *exactly* the noise-optimal ordering from the pre-analysis (bit-flip first, entangler last; worst-case 0.9057).
+- |Ψ-⟩: a different minimal circuit than the enumeration's top pick, but noise-equivalent — worst-case 0.8947 vs the best ordering's 0.8949 (−0.0002). It obeys the same physics: starts with X, ends on the entangler.
+- |Φ-⟩: kept the trailing-Z ordering (worst-case 0.8785 vs best 0.8884). This is the one family where orderings are nearly tied (~1% spread), so the gradient was too weak to matter.
+- Dose-response, in other words: the agent honors gate ordering exactly in proportion to how much fidelity it buys (5.5% and 2.8% spreads honored; 1% ignored). Handedness flipped globally vs Run 7 (Q0-core instead of Q1-core) — seed path-dependence between symmetric optima.
+
+**Key findings**:
+- One number — the completion threshold — flips the converged solution class from alphabet-minimal (Run 7) to depth-minimal + noise-ordered (Run 7b). The threshold is not just a success criterion; it is the *de facto* depth/fidelity regularizer of the whole reward.
+- The MGR fidelity-record increments alone (~0.05) are too weak to shape depth against trunk-reuse pressure; the completion bonus must be placed where the depth difference changes completion probability.
+- Practical recipe for future noisy experiments: set the threshold *between* the worst-case ceiling of the minimal circuit and that of the next-longer circuit family, using `noise_analysis --multi_bell` to locate both.
+- Phase 2 closes with no caveats: a single 5.5K-param policy compiles all 4 Bell states at minimal depth, with noise-optimal gate ordering where it matters, robust across the full noise distribution, zero-shot to noiseless.
+
+**Model**: `models/multi_bell_meta_noise_t85/final.pt` (+ 37 checkpoints)
+**Config**: `models/multi_bell_meta_noise_t85/config.json`
+**TensorBoard**: `logs/tensorboard/multi_bell_meta_noise_t85/`
+**Eval trajectories**: `experiments/run7b_eval/`
+
+---
+
 ## Planned Experiments
 
 ### Narrative Arc
 
-Runs 1-5 established the MGR + masking architecture and proved it robust under noise. But all five runs train a single-target agent -- it memorizes one circuit (H→CNOT for |Φ+⟩). Phase 2 tests **generalization**: can a single policy learn to compile circuits for *multiple* target states, adapting its gate sequence based on what it observes? Run 6 answered yes for the noiseless case (compositional 4-target policy, all minimal-depth); Run 7 adds noise on top.
+Runs 1-5 established the MGR + masking architecture and proved it robust under noise. But all five runs train a single-target agent -- it memorizes one circuit (H→CNOT for |Φ+⟩). Phase 2 tested **generalization**: Run 6 answered yes for the noiseless case (compositional 4-target policy, all minimal-depth); Run 7 added domain-randomized noise and delivered the capstone -- one policy, any Bell state, any noise draw, zero-shot to noiseless -- while exposing that a loose completion threshold lets PPO drift from depth-minimal to *alphabet-minimal* solutions. Run 7b confirmed the cause with a single-variable change: threshold 0.85 restores minimal depth and (where it matters) noise-optimal gate ordering. Phase 2 is complete with no caveats.
 
 This is the transition from "proof-of-concept reward architecture" to "general-purpose RL circuit compiler."
 
@@ -369,39 +524,22 @@ Phase 1 (complete): Architecture validation
   Run 4  Robust under fixed noise
   Run 5  Robust under domain-randomized noise
 
-Phase 2 (in progress): Multi-target generalization
+Phase 2 (complete): Multi-target generalization
   Run 6  Solved: conditional compiler across all 4 Bell states
-  Run 7  Multi-Bell + meta-noise: generalize over targets AND noise
+  Run 7  Capstone: targets x noise; exposed threshold-driven drift to
+         alphabet-minimal Ψ circuits
+  Run 7b Threshold 0.85 -> depth-minimal restored + noise-optimal orderings
 
-Phase 3 (future): Hardware relevance
+Phase 3 (next): Hardware relevance
   Run 8  Hardware-native gate sets (IBM/Google/IonQ)
   Run 9  3-qubit GHZ (scaling test)
 ```
 
 ---
 
-### Experiment 7: Multi-Bell + Meta-Noise
-
-**Status**: Next up
-**Goal**: Combine multi-target generalization with domain-randomized noise.
-
-This is the capstone of Phase 2: a single policy that prepares any Bell state under any noise regime. If this works, the agent is a genuine general-purpose 2-qubit circuit compiler.
-
-| Parameter | Value |
-|---|---|
-| Target states | {|Φ+⟩, |Φ-⟩, |Ψ+⟩, |Ψ-⟩}, randomized per episode |
-| meta_noise | True |
-| Observation | 32-dim (current state + target state Paulis) |
-| completion_threshold | 0.80 |
-| total_timesteps | 500K-1M |
-
-**Key question**: Under high noise, do different targets require different circuit strategies? Or is the shortest circuit always optimal (less decoherence exposure)?
-
----
-
 ### Experiment 8: Hardware-Native Gate Sets
 
-**Status**: Future (Phase 3)
+**Status**: Next up (Phase 3)
 **Goal**: Replace the textbook gate set with hardware-specific native gates.
 
 Real quantum processors don't run {H, X, Z, CNOT}. Each vendor has a native gate set:

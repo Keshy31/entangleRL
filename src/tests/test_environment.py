@@ -224,6 +224,59 @@ def main():
         print(f"  {name:9s} ({len(actions)} gates): F={info['fidelity']:.4f}  {circuit}")
         e.close()
 
+    # 10. Combined multi-target + meta-noise (Experiment 7 preconditions)
+    print(f"\n--- Multi-target + meta-noise combined checks ---")
+    np.random.seed(0)
+    combo = QuantumPrepEnv(multi_target=True, meta_noise=True,
+                           completion_threshold=0.80)
+    obs, info = combo.reset()
+    assert obs.shape == (32,), f"Combined env obs should be (32,), got {obs.shape}"
+
+    rate_keys = ("amplitude_damping_rate", "dephasing_rate", "depolarizing_rate",
+                 "bit_flip_rate", "thermal_occupation")
+    rates_seen = {k: set() for k in rate_keys}
+    targets_seen = set()
+    for _ in range(32):
+        combo.reset()
+        targets_seen.add(combo.target_index)
+        for k in rate_keys:
+            rates_seen[k].add(round(getattr(combo, k), 6))
+    assert targets_seen == {0, 1, 2, 3}, (
+        f"Expected all 4 targets under meta-noise, saw {targets_seen}")
+    for k in rate_keys:
+        assert len(rates_seen[k]) > 1, f"meta_noise should resample {k} per episode"
+    assert max(rates_seen["amplitude_damping_rate"]) <= 0.2 + 1e-9, (
+        "amplitude_damping_rate sampled outside U(0, 0.2)")
+    combo.close()
+    print(f"  32-dim obs, all 4 targets sampled, noise rates resampled per episode: OK")
+
+    # Scripted optimal circuits still complete at threshold 0.80 under sampled
+    # meta-noise. Worst-case ceilings (noise_analysis --multi_bell) sit above
+    # 0.80 for every target, but the margin shrinks with depth -- allow a few
+    # near-worst-case noise draws to miss.
+    np.random.seed(1)
+    for idx, actions in optimal_circuits.items():
+        e = QuantumPrepEnv(multi_target=True, meta_noise=True,
+                           fixed_target_index=idx, completion_threshold=0.80)
+        completions, fids = 0, []
+        for _ in range(20):
+            e.reset()
+            terminated = False
+            for action in actions:
+                _, _, terminated, _, info = e.step(action)
+                if terminated:
+                    break
+            completions += int(terminated)
+            fids.append(info["fidelity"])
+        name = e.target_names[idx]
+        print(f"  {name:9s}: {completions}/20 complete @0.80 under meta-noise, "
+              f"mean F_end={np.mean(fids):.4f}")
+        assert completions >= 15, (
+            f"{name}: expected >=15/20 completions at 0.80 under meta-noise, "
+            f"got {completions}")
+        e.close()
+    print(f"  Multi-target + meta-noise: OK")
+
     print("\n=== ALL SANITY CHECKS PASSED ===")
 
 

@@ -170,9 +170,15 @@ See the [research analysis](docs/Guidebook%20for%20Reinforcement%20Learning%20in
 
 The initial state |00⟩ has intrinsic fidelity 0.5 with the Bell target. The optimal path requires *reducing* fidelity to 0.25 (via Hadamard) before the entangling CNOT raises it to 1.0. Absolute rewards trap the agent at the 0.5 plateau. MGR solves this by only rewarding new fidelity records, making the dip cost-neutral.
 
-### Next: Multi-Target Generalization
+### Phase 2: Multi-Target Generalization (complete)
 
-Training a single conditional policy to prepare all 4 Bell states, testing whether the architecture produces a general circuit compiler rather than a memorized solution. See [EXPERIMENTS.md](EXPERIMENTS.md) for the full roadmap.
+| Run | Key Change | Result |
+|-----|-----------|--------|
+| 6. Multi-Bell | 4 targets, 32-dim obs | One compositional policy, all 4 Bell states at minimal depth, F=1.0 |
+| 7. Multi-Bell + meta-noise | Targets x randomized noise | 100% completion under any noise draw, zero-shot to noiseless -- but discovered *alphabet-minimal* (3-gate vocabulary) rather than depth-minimal circuits for Ψ targets |
+| 7b. Threshold 0.85 | Single-variable fix | Depth-minimal circuits restored (2/3/3/4), X back in the alphabet, fidelity at the physical ceiling on every target, noise-optimal gate ordering where ordering matters |
+
+Run 7's surprise: with a completion threshold loose enough that long circuits still finish, PPO consolidates onto a minimal gate *alphabet* -- trading ~0.05 fidelity for strategy reuse. Run 7b showed one number fixes it: the completion threshold doubles as the reward's depth/fidelity regularizer. Place it between the worst-case ceilings of the minimal and next-longer circuit families (computed by `noise_analysis --multi_bell`) and the agent recovers minimal depth and decoherence-aware gate ordering. See [EXPERIMENTS.md](EXPERIMENTS.md) for the full analysis.
 
 TensorBoard logs for all runs are under `logs/tensorboard/`. Launch with:
 ```bash
@@ -188,9 +194,9 @@ tensorboard --logdir=logs/tensorboard
 
 **Phase 1** (complete): Architecture validation -- MGR + masking solves deceptive landscapes, robust under noise
 
-**Phase 2** (next): Multi-target generalization -- single policy across all 4 Bell states, conditional on target observation
+**Phase 2** (complete): Multi-target generalization -- single policy across all 4 Bell states under domain-randomized noise, conditional on target observation
 
-**Phase 3** (future): Hardware relevance -- native gate sets (IBM/Google/IonQ), transpiler benchmarking, 3-qubit GHZ scaling
+**Phase 3** (next): Hardware relevance -- native gate sets (IBM/Google/IonQ), transpiler benchmarking, 3-qubit GHZ scaling
 
 ## Research Context
 

@@ -62,6 +62,19 @@ EXPERIMENT_PRESETS = {
         },
         "train": {"total_timesteps": 500_000, "checkpoint_interval": 10_000},
     },
+    "multi_bell_meta_noise": {
+        # Experiment 7 (Phase 2 capstone): any Bell target under
+        # domain-randomized noise. Worst-case ceilings (all rates maxed,
+        # noise_analysis --multi_bell): phi+ 0.918, phi- 0.888, psi+ 0.906,
+        # psi- 0.895. Meta-noise MC completion@0.80 = 100% on every target.
+        "experiment_name": "multi_bell_meta_noise",
+        "env": {
+            "multi_target": True,
+            "meta_noise": True,
+            "completion_threshold": 0.80,
+        },
+        "train": {"total_timesteps": 1_000_000, "checkpoint_interval": 25_000},
+    },
 }
 
 # ---------------------------------------------------------------------------
