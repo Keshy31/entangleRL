@@ -25,7 +25,7 @@ class Act3Fix(TeaserScene):
         self.play(FadeIn(h, shift=DOWN * 0.2), run_time=0.5)
         self.play(GrowFromCenter(rule), run_time=0.7)
         self.play(FadeIn(cap), run_time=0.5)
-        self.wait(1.3)
+        self.wait(1.7)
         self.clear_all()
 
     # ------------------------------------------------------------- beat 2 --
@@ -69,7 +69,7 @@ class Act3Fix(TeaserScene):
         self.play(Transform(water, water_hi), Transform(water_lbl, water_lbl_hi),
                   FadeIn(bonus, shift=UP * 0.3),
                   Flash(dot, color=GOLD, flash_radius=0.55), run_time=0.8)
-        self.wait(1.1)
+        self.wait(1.5)
         self.clear_all()
 
     # ------------------------------------------------------------- beat 3 --
@@ -89,12 +89,22 @@ class Act3Fix(TeaserScene):
         cross1 = Cross(h0, stroke_color=RED, stroke_width=5, scale_factor=0.75)
         cross2 = Cross(cx01, stroke_color=RED, stroke_width=5, scale_factor=0.75)
 
+        def dim(tile):
+            return AnimationGroup(
+                tile[0].animate.set_stroke(opacity=0.25).set_fill(opacity=0.04),
+                tile[1].animate.set_opacity(0.25))
+
+        def undim(tile):
+            return AnimationGroup(
+                tile[0].animate.set_stroke(opacity=1.0).set_fill(opacity=0.14),
+                tile[1].animate.set_opacity(1.0))
+
         self.play(Indicate(h0, color=TEAL, scale_factor=1.25), run_time=0.6)
-        self.play(Create(cross1), h0.animate.set_opacity(0.35), run_time=0.5)
+        self.play(Create(cross1), dim(h0), run_time=0.5)
         self.wait(0.6)
         self.play(Indicate(cx01, color=BLUE, scale_factor=1.25), run_time=0.6)
-        self.play(FadeOut(cross1), h0.animate.set_opacity(1.0),
-                  Create(cross2), cx01.animate.set_opacity(0.35), run_time=0.6)
-        self.wait(1.1)
+        self.play(FadeOut(cross1), undim(h0),
+                  Create(cross2), dim(cx01), run_time=0.6)
+        self.wait(1.5)
         self.clear_all()
         self.wait(0.2)

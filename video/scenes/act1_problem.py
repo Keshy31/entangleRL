@@ -23,7 +23,7 @@ class Act1Problem(TeaserScene):
 
         self.play(Write(title), run_time=1.3)
         self.play(FadeIn(sub, shift=UP * 0.3), run_time=0.7)
-        self.wait(1.4)
+        self.wait(1.8)
         self.clear_all()
 
     # ------------------------------------------------------------- beat 2 --
@@ -59,7 +59,7 @@ class Act1Problem(TeaserScene):
                   LaggedStart(*[FadeIn(c, scale=0.7) for c in chips],
                               lag_ratio=0.08, run_time=1.1))
         self.play(FadeIn(cap), run_time=0.5)
-        self.wait(1.7)
+        self.wait(2.2)
         self.clear_all()
 
     # ------------------------------------------------------------- beat 3 --
@@ -101,6 +101,6 @@ class Act1Problem(TeaserScene):
 
         cap3 = caption("reward-greedy agents never take the dip", t2c={"never": RED})
         self.play(FadeOut(cap2), FadeIn(cap3), run_time=0.4)
-        self.wait(1.4)
+        self.wait(1.9)
         self.clear_all()
         self.wait(0.2)
