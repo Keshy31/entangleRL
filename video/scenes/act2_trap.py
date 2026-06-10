@@ -20,7 +20,7 @@ class Act2Trap(TeaserScene):
 
         self.play(FadeIn(h, shift=DOWN * 0.2), run_time=0.5)
         self.play(GrowFromCenter(rule), run_time=0.7)
-        self.wait(0.9)
+        self.wait(1.3)
         self.h, self.rule = h, rule
 
     # ------------------------------------------------------------- beat 2 --
@@ -37,7 +37,7 @@ class Act2Trap(TeaserScene):
                               lag_ratio=0.25), run_time=0.9)
         self.play(FadeIn(cap), run_time=0.5)
         self.play(Indicate(lazy[2], color=TEAL, scale_factor=1.15), run_time=0.7)
-        self.wait(1.0)
+        self.wait(1.6)
         self.clear_all()
 
     # ------------------------------------------------------------- beat 3 --
@@ -81,6 +81,6 @@ class Act2Trap(TeaserScene):
         self.play(Create(ent), FadeIn(VGroup(ax, ax_lbl)), run_time=1.0)
         self.play(FadeIn(ent_end), FadeIn(share, scale=0.8), run_time=0.5)
         self.play(FadeIn(cap), run_time=0.5)
-        self.wait(1.7)
+        self.wait(2.5)
         self.clear_all()
         self.wait(0.2)

@@ -18,6 +18,7 @@ dist/
 
 # Video render output
 video/media/
+video/teaser_*.mp4
 
 # Logs and data
 logs/

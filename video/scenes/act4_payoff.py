@@ -33,10 +33,10 @@ class Act4Payoff(TeaserScene):
 
         # --- persistent furniture: scrubber (real episode-length curve) ----
         ax = Axes(x_range=[0, 102400, 25600], y_range=[0, 30, 10],
-                  x_length=7.6, y_length=1.5,
+                  x_length=7.2, y_length=1.5,
                   axis_config={"color": MUTED, "stroke_width": 2,
                                "include_ticks": False, "include_tip": False})
-        ax.move_to(DOWN * 2.25 + LEFT * 0.8)
+        ax.move_to(DOWN * 2.05 + LEFT * 0.9)
         faint = curve_line(ax, ep_len["steps"], ep_len["values"], GREY, width=2.5)
         faint.set_stroke(opacity=0.45)
         ax_lbl = txt("episode length", size=20, color=MUTED)
@@ -97,7 +97,7 @@ class Act4Payoff(TeaserScene):
             prev_x = step_x
 
             if step_x != panels[-1][2]:
-                self.wait(0.55)
+                self.wait(0.85)
                 self.play(FadeOut(strip), FadeOut(count), run_time=0.35)
             else:
                 # the payoff: the optimal 2-gate circuit
@@ -109,7 +109,7 @@ class Act4Payoff(TeaserScene):
                 self.play(Create(box), FadeIn(stamp, shift=UP * 0.2),
                           FadeOut(cap), FadeIn(cap2),
                           Flash(strip, color=GOLD, flash_radius=1.6), run_time=0.9)
-                self.wait(1.3)
+                self.wait(1.9)
         self.clear_all()
 
     # ----------------------------------------------------------- noise -----
@@ -158,7 +158,7 @@ class Act4Payoff(TeaserScene):
                   LaggedStart(*[FadeIn(r, shift=LEFT * 0.3) for r in rows],
                               lag_ratio=0.18), run_time=1.3)
         self.play(FadeIn(same, scale=0.9), FadeIn(cap), run_time=0.6)
-        self.wait(1.8)
+        self.wait(2.4)
         self.clear_all()
 
     # ----------------------------------------------------------- outro -----
@@ -191,6 +191,6 @@ class Act4Payoff(TeaserScene):
         self.play(LaggedStart(*[FadeIn(l, shift=LEFT * 0.3) for l in lines],
                               lag_ratio=0.2), run_time=1.3)
         self.play(Write(brand), FadeIn(sub, shift=UP * 0.2), run_time=1.1)
-        self.wait(2.2)
+        self.wait(2.8)
         self.play(*[FadeOut(m) for m in self.mobjects], run_time=0.8)
         self.wait(0.3)
